@@ -1,18 +1,20 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file='.env', extra='ignore')
-    app_name: str = 'reference-agent'
-    app_env: str = 'local'
-    anthropic_api_key: str = ''
-    anthropic_model: str = 'claude-3-5-sonnet-20241022'
-    qdrant_url: str = 'http://localhost:6333'
-    qdrant_api_key: str = ''
-    qdrant_collection: str = 'architectural_references'
-    sqlite_path: str = './data/reference_agent.db'
-    raw_storage_path: str = './data/raw'
-    text_embed_model: str = 'sentence-transformers/all-MiniLM-L6-v2'
-    clip_model: str = 'openai/clip-vit-base-patch32'
-    top_k: int = 8
+    app_name: str = "reference-agent"
+    app_env: str = "local"
+    
+    # Anthropic API 설정
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    
+    # GCP Custom Search API 설정
+    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+    ARCHDAILY_CX: str = os.getenv("ARCHDAILY_CX", "")
+    PINTEREST_CX: str = os.getenv("PINTEREST_CX", "")
+
+    class Config:
+        env_file = ".env"
+        extra = "ignore" # .env에 선언되지 않은 추가 변수가 들어와도 에러 내지 않고 무시함
 
 settings = Settings()
