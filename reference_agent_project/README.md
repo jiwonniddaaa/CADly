@@ -8,7 +8,7 @@
 - 이미지 검색 시 custom search api를 사용하여 특정 웹사이트 (archdaily, pinterest)에서 사용자의 요청에 맞게 이미지 가져옴
 - **다만 custom search api가 최근 구글에서 막고 있다고 하여 SerpApi로 바꿔야 할 필요가 있음 -> 변경 완료 20260520 02:33**
 
-## 구성
+## 구성 -- 아래 내용 수정 필요
 - LLM: Anthropic Claude
 - Agent Framework: LangGraph
 - Backend: FastAPI
