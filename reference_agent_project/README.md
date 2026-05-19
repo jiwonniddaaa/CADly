@@ -3,6 +3,11 @@
 - Anthropic Claude 기반 멀티모달 레퍼런스 에이전트.
 - ArchDaily에서 크롤링한 이미지와 CSV 태깅 데이터를 기반으로, 사용자 질의에 맞는 레퍼런스 이미지를 검색하여 제공
 
+## Refactoring (20260519)
+- **레퍼런스 에이전트가 각각 search node와 concept node를 가지는 구조로 수정**
+- **이미지 검색 시 custom search api를 사용하여 특정 웹사이트 (archdaily, pinterest)에서 사용자의 요청에 맞게 이미지 가져옴**
+- **다만 custom search api가 최근 구글에서 막고 있다고 하여 SerpApi로 바꿔야 할 필요가 있음**
+
 ## 구성
 - LLM: Anthropic Claude
 - Agent Framework: LangGraph
