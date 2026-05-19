@@ -1,41 +1,13 @@
-from typing import Any, Optional
-from pydantic import BaseModel, Field
+from typing import TypedDict, Annotated, Sequence, List, Dict, Any
+from langchain_core.messages import BaseMessage
+import operator
 
-class SearchRequest(BaseModel):
-    query: str
-    image_path: Optional[str] = None
-    top_k: int = Field(default=8, ge=1, le=50)
-
-class SearchResultItem(BaseModel):
-    id: str
-    score: float
-    title: str
-    source: str
-    page_url: Optional[str] = None
-    image_path: Optional[str] = None
-    image_url: Optional[str] = None
-    summary: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-class SearchResponse(BaseModel):
-    query: str
-    rewritten_query: Optional[str] = None
-    items: list[SearchResultItem]
-
-class IngestRecord(BaseModel):
-    source: str
-    external_id: str
-    title: str
-    description: str = ''
-    page_url: Optional[str] = None
-    image_path: Optional[str] = None
-    floorplan_path: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-class CsvPathIngestRequest(BaseModel):
-    csv_path: str
-
-class AgentQueryResponse(BaseModel):
-    rewritten_query: str
-    rationale: str
-    references: list[SearchResultItem]
+class AgentState(TypedDict):
+    # 대화 기록 유지 (기존 메시지에 새 메시지 추가)
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    # 라우팅 결과 (search 또는 concept)
+    intent: str
+    # 검색용으로 추출된 키워드
+    search_query: str
+    # 검색된 결과 데이터
+    search_results: List[Dict[str, Any]]

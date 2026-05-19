@@ -1,17 +1,33 @@
-from app.connectors.base import BaseConnector
-from app.models.schemas import IngestRecord
+import requests
+from app.core.config import settings
 
-class PinterestConnector(BaseConnector):
-    source_name = 'pinterest'
-
-    async def fetch(self, keyword: str, limit: int = 10) -> list[IngestRecord]:
-        return [
-            IngestRecord(
-                source=self.source_name,
-                external_id=f'{keyword}-{i}',
-                title=f'Pinterest placeholder result {i} for {keyword}',
-                description='Pinterest는 운영 전 공식 API/약관 검토 후 커넥터를 구현하세요.',
-                metadata={'keyword': keyword, 'connector': 'placeholder', 'status': 'not_implemented'}
-            )
-            for i in range(1, limit + 1)
-        ]
+def search_pinterest(query: str, num: int = 5) -> list:
+    """
+    Google Custom Search API를 사용하여 Pinterest 이미지를 검색합니다.
+    """
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": settings.GOOGLE_API_KEY,
+        "cx": settings.PINTEREST_CX,
+        "q": query,
+        "searchType": "image",
+        "num": num
+    }
+    
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        items = data.get("items", [])
+        
+        results = []
+        for item in items:
+            results.append({
+                "source": "pinterest",
+                "link": item.get("link"),
+                "title": item.get("title"),
+                "contextLink": item.get("image", {}).get("contextLink")
+            })
+        return results
+    else:
+        print(f"Pinterest Search Error: {response.status_code} - {response.text}")
+        return []

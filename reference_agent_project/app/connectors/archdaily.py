@@ -1,31 +1,34 @@
-import httpx
-from bs4 import BeautifulSoup
-from app.connectors.base import BaseConnector
-from app.models.schemas import IngestRecord
+import requests
+from app.core.config import settings
 
-class ArchDailyConnector(BaseConnector):
-    source_name = 'archdaily'
-
-    async def fetch(self, keyword: str, limit: int = 10) -> list[IngestRecord]:
-        url = f'https://www.archdaily.com/search/projects/categories/houses?q={keyword}'
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-            res.raise_for_status()
-        soup = BeautifulSoup(res.text, 'lxml')
-        out = []
-        for i, a in enumerate(soup.select('a[title]')[:limit], start=1):
-            title = a.get('title', '').strip()
-            href = a.get('href')
-            if not title or not href:
-                continue
-            if href.startswith('/'):
-                href = 'https://www.archdaily.com' + href
-            out.append(IngestRecord(
-                source=self.source_name,
-                external_id=f'{keyword}-{i}',
-                title=title,
-                description=f'ArchDaily search result for {keyword}',
-                page_url=href,
-                metadata={'keyword': keyword, 'connector': 'html-search', 'compliance_note': 'check robots and terms before production use'}
-            ))
-        return out
+def search_archdaily(query: str, num: int = 5) -> list:
+    """
+    Google Custom Search API를 사용하여 ArchDaily 이미지를 검색합니다.
+    """
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": settings.GOOGLE_API_KEY,
+        "cx": settings.ARCHDAILY_CX,
+        "q": query, # 사용자의 자연어 질문 혹은 정제된 키워드 
+        "searchType": "image", # 이미지 결과 요청 필수 파라미터 
+        "num": num
+    }
+    
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        items = data.get("items", [])
+        
+        # 프론트엔드에서 활용하기 좋게 필요한 정보(link, title, contextLink)만 추출 [cite: 83, 87]
+        results = []
+        for item in items:
+            results.append({
+                "source": "archdaily",
+                "link": item.get("link"), 
+                "title": item.get("title"),
+                "contextLink": item.get("image", {}).get("contextLink") 
+            })
+        return results
+    else:
+        print(f"ArchDaily Search Error: {response.status_code} - {response.text}")
+        return []

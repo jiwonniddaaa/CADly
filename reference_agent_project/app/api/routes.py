@@ -1,29 +1,20 @@
 from fastapi import APIRouter
+from pydantic import BaseModel
+from typing import List, Optional
 from app.agents.reference_agent import ReferenceAgent
-from app.models.schemas import SearchRequest, SearchResponse, IngestRecord, CsvPathIngestRequest
-from app.services.csv_ingestion import CsvIngestionService
-from app.services.ingestion import IngestionService
-from app.services.retrieval import RetrievalService
 
 router = APIRouter()
-retrieval = RetrievalService()
-ingestion = IngestionService()
-csv_ingestion = CsvIngestionService()
 agent = ReferenceAgent()
 
-@router.post('/reference/search', response_model=SearchResponse)
-def reference_search(req: SearchRequest):
-    return retrieval.search(req)
+# 프론트에서 받을 요청 데이터 형식
+class ChatRequest(BaseModel):
+    query: str
+    chat_history: Optional[List] = None
 
-@router.post('/reference/ingest/local')
-def reference_ingest_local(rec: IngestRecord):
-    pid = ingestion.ingest_record(rec)
-    return {'status': 'ingested', 'id': pid}
-
-@router.post('/reference/ingest/csv-path')
-def reference_ingest_csv_path(req: CsvPathIngestRequest):
-    return csv_ingestion.ingest_csv(req.csv_path)
-
-@router.post('/reference/agent/query')
-def reference_agent_query(req: SearchRequest):
-    return agent.run(req)
+@router.post('/chat')
+def reference_agent_query(req: ChatRequest):
+    """
+    사용자의 질문을 받아 레퍼런스 에이전트를 실행하고 결과를 반환합니다.
+    """
+    # agent.chat 메서드 호출
+    return agent.chat(user_input=req.query, chat_history=req.chat_history)
