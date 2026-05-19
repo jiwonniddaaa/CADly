@@ -9,9 +9,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     
     # GCP Custom Search API 설정
-    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
-    ARCHDAILY_CX: str = os.getenv("ARCHDAILY_CX", "")
-    PINTEREST_CX: str = os.getenv("PINTEREST_CX", "")
+    # GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+    # ARCHDAILY_CX: str = os.getenv("ARCHDAILY_CX", "")
+    # PINTEREST_CX: str = os.getenv("PINTEREST_CX", "")
+
+    SERPAPI_API_KEY: str = os.getenv("SERPAPI_API_KEY", "")
 
     class Config:
         env_file = ".env"
