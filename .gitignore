@@ -1,0 +1,10 @@
+.test_venv/
+__pycache__/
+*.pyc
+
+.env
+
+outputs/
+ckpts/
+
+.DS_Store
