@@ -235,11 +235,15 @@ CADly schema:
             content = response.content
             cadly_schema = self._safe_json_loads(content)
 
+            message = self._generate_user_response(
+                user_input=user_input,
+                sketch_analysis=sketch_analysis,
+            )
+
             return {
                 "status": "sketch_extracted",
-                "route": "design_orchestrator",
-                "cadly_schema": cadly_schema,
-                "planning_result": cadly_schema,
+                "sketch_result": cadly_schema,
+                "final_answer": message,
             }
 
         except Exception as e:
@@ -248,3 +252,40 @@ CADly schema:
                 "route": "unsupported_image",
                 "final_answer": f"CADly schema 변환 중 오류 발생: {e}",
             }
+        
+    def _generate_user_response(
+        self,
+        user_input: str,
+        sketch_analysis: Dict[str, Any],
+    ) -> str:
+        prompt = f"""
+    너는 CADly의 사용자 응답 생성 담당자다.
+
+    목표:
+    사용자의 텍스트 요청과 손도면 분석 결과, CADly schema를 바탕으로
+    사용자에게 자연스럽고 명확한 응답을 작성해라.
+
+    중요:
+    - 단순히 JSON을 나열하지 마라.
+    - 사용자가 요청한 내용을 반영해서 말해라.
+    - 손도면에서 인식한 공간과 연결 관계를 간단히 설명해라.
+    - 아직 확실하지 않은 부분이 있으면 조심스럽게 언급해라.
+    - 너무 길게 쓰지 마라.
+
+    사용자 요청:
+    {user_input}
+
+    손도면 분석 결과:
+    {json.dumps(sketch_analysis, ensure_ascii=False, indent=2)}
+
+    CADly schema:
+    {json.dumps(cadly_schema, ensure_ascii=False, indent=2)}
+
+    사용자에게 보여줄 응답만 작성해라.
+    """
+
+        response = self.client.invoke([
+            HumanMessage(content=prompt)
+        ])
+
+        return response.content
