@@ -4,10 +4,12 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_anthropic import ChatAnthropic
 from reference_agent.core.config import settings
 from reference_agent.connectors.image_search import search_reference_images
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage
 
 # 1. 상태(State) 정의
 class GraphState(TypedDict):
-    messages: Annotated[list, "대화 기록"]
+    messages: Annotated[List[BaseMessage], add_messages]
     intent: str
 
     # 채민 - reference search 전용 state
@@ -148,7 +150,13 @@ def concept_node(state: GraphState):
     """
     # 채민 - 컨셉 강화 작업은 고사양 모델로 처리
     response = high_llm.invoke([HumanMessage(content=prompt)])
-    return state
+    
+    return {
+        "messages": [
+            AIMessage(content=response.content)
+        ],
+        "concept_result": response.content,
+    }
 
 # 5. 그래프(Workflow) 구성
 workflow = StateGraph(GraphState)
