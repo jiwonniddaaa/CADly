@@ -13,7 +13,7 @@ from design.path_utils import resolve_hd_path, HD_ROOT
 from design.validation_node import validate_generator_graph
 from design.sampling_node import run_sampling
 from design.repair.repair_agent import repair_agent
-
+from design.cad_import_node import cad_import_node
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]   # CADly/
 HD_ROOT = PROJECT_ROOT / "house_diffusion"            # CADly/house_diffusion
@@ -72,6 +72,16 @@ def should_continue_after_sampling(state: CADlyGenerationState) -> str:
         return "end"
     return "continue"
 
+def should_continue_after_repair(state: CADlyGenerationState) -> str:
+    if state.get("status") in [
+        "repair_failed",
+        "verification_failed",
+        "error",
+    ]:
+        return "end"
+
+    return "continue"
+
 def build_design_orchestrator():
     graph = StateGraph(CADlyGenerationState)
     
@@ -79,6 +89,7 @@ def build_design_orchestrator():
     graph.add_node("save_graph_json", save_graph_json)
     graph.add_node("run_sampling", run_sampling)
     graph.add_node("run_repair_agent", run_repair_agent)
+    graph.add_node("cad_import_node", cad_import_node)
 
     graph.set_entry_point("validate_generator_graph")
 
@@ -109,6 +120,15 @@ def build_design_orchestrator():
         },
     )
 
-    graph.add_edge("run_repair_agent", END)
+    graph.add_conditional_edges(
+        "run_repair_agent",
+        should_continue_after_repair,
+        {
+            "continue": "cad_import_node",
+            "end": END,
+        },
+    )
+
+    graph.add_edge("cad_import_node", END)
 
     return graph.compile()
