@@ -8,3 +8,6 @@ outputs/
 ckpts/
 
 .DS_Store
+
+data/
+preprocess/
