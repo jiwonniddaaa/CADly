@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END
 PROJECT_ROOT = Path(__file__).resolve().parents[1]   # CADly/
 HD_ROOT = PROJECT_ROOT / "house_diffusion"            # CADly/house_diffusion
 
-
+# state 정의
 class CADlyGenerationState(TypedDict, total=False):
     graph_json_path: str
     model_path: str
@@ -30,18 +30,14 @@ class CADlyGenerationState(TypedDict, total=False):
     status: str
     message: str
 
-
+# 유틸리티 함수
 def resolve_hd_path(path_value: str) -> Path:
-    """
-    Relative paths are interpreted from CADly/house_diffusion.
-    Absolute paths are used as-is.
-    """
     path = Path(path_value)
     if path.is_absolute():
         return path
     return HD_ROOT / path
 
-
+# 노드 정의
 def load_graph_json(state: CADlyGenerationState) -> CADlyGenerationState:
     graph_json_path = resolve_hd_path(state["graph_json_path"])
 
@@ -69,7 +65,6 @@ def load_graph_json(state: CADlyGenerationState) -> CADlyGenerationState:
             "message": f"Failed to read graph JSON: {e}",
             "validation_errors": [str(e)],
         }
-
 
 def validate_graph_json(state: CADlyGenerationState) -> CADlyGenerationState:
     graph_data = state.get("graph_data")
@@ -163,10 +158,6 @@ def validate_graph_json(state: CADlyGenerationState) -> CADlyGenerationState:
 
 
 def check_housediffusion_input(state: CADlyGenerationState) -> CADlyGenerationState:
-    """
-    Checks whether the graph JSON can be converted by:
-    CADly/house_diffusion/house_diffusion/single_graph_dataset.py
-    """
     try:
         if str(HD_ROOT) not in sys.path:
             sys.path.insert(0, str(HD_ROOT))
@@ -197,13 +188,6 @@ def check_housediffusion_input(state: CADlyGenerationState) -> CADlyGenerationSt
 
 
 def run_housediffusion_sampling(state: CADlyGenerationState) -> CADlyGenerationState:
-    """
-    Runs:
-    CADly/house_diffusion/scripts/sample_single_graph.py
-
-    sample_single_graph.py already performs:
-    sampling + export_prediction(svg/dxf/room labels)
-    """
     graph_json_path = Path(state["graph_json_path"])
     model_path = resolve_hd_path(state["model_path"])
     out_dir = resolve_hd_path(state.get("out_dir", "outputs/cadly"))
@@ -261,14 +245,6 @@ def run_housediffusion_sampling(state: CADlyGenerationState) -> CADlyGenerationS
 
 def verify_generated_floorplan(state: CADlyGenerationState) -> CADlyGenerationState:
     """
-    Verifies generated output files after HouseDiffusion sampling.
-
-    Current verification:
-    1. SVG file exists
-    2. DXF file exists
-    3. Room label JSON exists
-    4. Room label JSON is readable, if present
-
     This node can later be expanded to check:
     - room count consistency
     - room type consistency
