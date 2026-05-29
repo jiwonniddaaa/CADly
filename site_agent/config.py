@@ -38,7 +38,8 @@ class PublicDataConfig:
 class LLMConfig:
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = "gpt-4o" 
+        # self.model = "gpt-4o" 
+        self.model = "gpt-5-mini"
 
     def validate(self):
         if not self.api_key:
