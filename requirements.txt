@@ -1,0 +1,11 @@
+langgraph
+langchain-core
+langchain-anthropic
+openai
+pandas
+httpx
+requests
+fastapi
+pydantic
+pydantic-settings
+python-dotenv
