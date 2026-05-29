@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from typing import Annotated, TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
@@ -20,18 +22,31 @@ class GraphState(TypedDict):
     design_intent: str
     narrative: str
 
+    # 예린 - 컨셉 구조화 전용 state 추가
+    concept_structured: Dict[str, Any] # 컨셉 구조화 결과
+    concept_updated_at: str # 컨셉 구조화 시간  
+
+
 # 2. LLM 초기화
 high_llm = ChatAnthropic(
     # 채민 - 3-5 버전이 안 돌아가서 4-5로 변경
     model="claude-sonnet-4-5-20250929", 
-    anthropic_api_key=settings.ANTHROPIC_API_KEY,
+    # 예린 - factchat-cloud 모델 사용
+    anthropic_api_url=settings.ANTHROPIC_BASE_URL,
+    anthropic_api_key=settings.ANTHROPIC_AUTH_TOKEN,
+
+    #anthropic_api_key=settings.ANTHROPIC_API_KEY,
     max_retries=3,
     default_headers={"anthropic-version": "2023-06-01"}
 )
 # 채민 - 라우팅 및 쿼리 관련 작업은 저사양 모델로 빠르게 처리
 low_llm = ChatAnthropic(
     model="claude-haiku-4-5-20251001",
-    anthropic_api_key=settings.ANTHROPIC_API_KEY,
+
+    # 예린 - factchat-cloud 모델 사용
+    anthropic_api_url=settings.ANTHROPIC_BASE_URL,
+    anthropic_api_key=settings.ANTHROPIC_AUTH_TOKEN,
+    # anthropic_api_key=settings.ANTHROPIC_API_KEY,
     max_retries=3,
     default_headers={"anthropic-version": "2023-06-01"}
 )
@@ -119,6 +134,7 @@ def query_processing_node(state: GraphState):
     
     # 채민 - 쿼리 추출은 저사양 모델로 처리
     response = low_llm.invoke([HumanMessage(content=prompt)])
+
     content = response.content.strip()
     
     if content.startswith("SEARCH:"):
@@ -128,27 +144,115 @@ def query_processing_node(state: GraphState):
         return {"search_query": "modern architecture interior"}
     return state
 
-# 채민 - concept/narrtive 강화 노드
+# 예린 - concept/narrtive 구조화 노드
 def concept_node(state: GraphState):
-    # 채민 - 아래 내용은 예시로 써둔 것이므로, 자유롭게 수정하셔도 됩나다
     user_input = state["messages"][-1].content
+    previous_concept_state = {
+        "concept_result": state.get("concept_result", ""),
+        "concept_keywords": state.get("concept_keywords", []),
+        "design_intent": state.get("design_intent", ""),
+        "narrative": state.get("narrative", ""),
+    }
 
     prompt = f"""
     당신은 건축 컨셉 디렉터입니다.
-    사용자의 아이디어를 바탕으로 건축적 의도, 공간 내러티브, 감각적 키워드, 설계 방향을 강화하세요.
 
-    사용자 입력:
+    [역할]
+    - 사용자 입력을 바탕으로 건축적 의도, 공간의 존재 이유(reason), 사용자 경험 흐름(journey)을 구조화합니다.
+
+    [입력]
+    1) 사용자 원문:
     {user_input}
 
-    출력:
-    - 핵심 컨셉
-    - 건축 의도
-    - 공간 내러티브
-    - 디자인 키워드
+    2) 이전 컨셉 state(있다면 참고):
+    {previous_concept_state}
+
+    [출력 규칙]
+    - 반드시 JSON 객체 하나만 출력하세요. 설명 문장, 코드블록, 마크다운 금지.
+    - 추측/과장/근거 없는 수치(면적, 비용, 성능 등)를 만들지 마세요.
+    - 입력에 없는 사실은 생성하지 말고, 필요한 경우 uncertainties에 명시하세요.
+
+    [품질 기준]
+    - spatial_reasoning에는 각 공간의 존재 이유(reason)가 반드시 포함되어야 합니다.
+    - user_journey에는 사용자의 경험 흐름(journey)이 단계적으로 반드시 포함되어야 합니다.
+
+    [JSON 스키마]
+    {{
+    "concept_title": "string",
+    "concept_keywords": ["string", "string"],
+    "design_intent": "2~4문장",
+    "spatial_reasoning": [
+        {{
+        "space": "string",
+        "reason": "string"
+        }}
+    ],
+    "user_journey": [
+        {{
+        "step": 1,
+        "scene": "string",
+        "experience": "string",
+        "design_response": "string"
+        }}
+    ],
+    "narrative": "4~7문장",
+    "uncertainties": ["string"]
+    }}
+
+    [추가 제약]
+    - concept_keywords는 4~8개로 작성하세요.
+    - user_journey는 최소 3단계 이상 작성하세요.
+    - spatial_reasoning은 최소 3개 항목 작성하세요.
     """
+
     # 채민 - 컨셉 강화 작업은 고사양 모델로 처리
     response = high_llm.invoke([HumanMessage(content=prompt)])
-    return state
+
+    # 예린 - 컨셉 구조화 결과 추출
+    raw_content = response.content.strip()
+
+    try:
+        start = raw_content.find("{")
+        end = raw_content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            structured = json.loads(raw_content[start:end + 1])
+        else:
+            structured = {}
+    except Exception:
+        structured = {}
+
+    concept_keywords = structured.get("concept_keywords", [])
+    if not isinstance(concept_keywords, list):
+        concept_keywords = []
+    concept_keywords = [str(k).strip() for k in concept_keywords if str(k).strip()]
+
+    design_intent = str(structured.get("design_intent", "")).strip()
+    narrative = str(structured.get("narrative", "")).strip()
+    concept_title = str(structured.get("concept_title", "컨셉 제안")).strip() or "컨셉 제안"
+
+    if not design_intent:
+        design_intent = "사용자 요청을 바탕으로 공간의 목적과 관계를 중심으로 설계 의도를 정리했습니다."
+    if not narrative:
+        narrative = "진입-체류-전환 흐름을 기준으로 사용자 경험을 단계적으로 구성했습니다."
+
+    user_message = (
+        f"[{concept_title}]\n\n"
+        f"설계 의도:\n{design_intent}\n\n"
+        f"공간 내러티브:\n{narrative}"
+    )
+    if concept_keywords:
+        user_message += "\n\n디자인 키워드:\n- " + "\n- ".join(concept_keywords)
+
+    return {
+        "messages": [AIMessage(content=user_message)],
+        "concept_result": user_message,
+        "concept_keywords": concept_keywords,
+        "design_intent": design_intent,
+        "narrative": narrative,
+        "concept_structured": structured if structured else {"raw_response": raw_content},
+        "concept_updated_at": datetime.now(timezone.utc).isoformat(),
+        "search_results": []
+    }
 
 # 5. 그래프(Workflow) 구성
 workflow = StateGraph(GraphState)
