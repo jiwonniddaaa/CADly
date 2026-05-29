@@ -73,14 +73,28 @@ class SiteAgent:
         
         if p.get('intent') == "search":
             # [Case B] 자연어 조건 검색 파이프라인 가동
-            sigungu_cd = p.get('sigungu_cd') if p.get('sigungu_cd') else "11290"
-            theme = p.get('theme') if p.get('theme') else "자연"
-            raw_result = await self.analyzer.discover_from_dataset(sigungu_cd, theme)
+            sigungu_cd = p.get('sigungu_cd')
+            theme = p.get('theme')
+            if not sigungu_cd: # 기본값 "11290" 채우지 말고 사용자에게 되물어보기
+                return {"status": "error", "message": "정확한 지역(시군구)을 파악하지 못했습니다. 구 명칭을 명확히 말씀해주세요."}
+            raw_result = await self.analyzer.discover_from_dataset(sigungu_cd, theme, user_input)
         else:
             # [Case A] 특정 주소 다이렉트 쿼리 프로파일링 가동
-            pnu = p.get('pnu') if p.get('pnu') else "1111010100"
-            bun = p.get('bun') if p.get('bun') else "0059"
-            ji = p.get('ji') if p.get('ji') else "0045"
+            # 🌟 [Case A] 특정 주소 다이렉트 쿼리 프로파일링 가동 (수정 완료)
+            pnu = p.get('pnu')
+            bun = p.get('bun')
+            ji = p.get('ji')
+            
+            # 1. 번지수(bun) 정보가 아예 없다면 가짜 데이터를 주입하지 말고 방어합니다.
+            if not bun:
+                return {
+                    "status": "error", 
+                    "message": "분석을 위해 정확한 지번이나 주소 정보가 필요합니다. '역삼동 747'과 같이 구체적인 주소나 번지수를 포함하여 다시 질문해 주세요."
+                }
+            
+            # 부번(ji)은 없을 수도 있으므로 없는 경우 안전하게 "0000" 처리
+            ji = ji if ji else "0000"
+            pnu = pnu if pnu else "1111010100"
             raw_result = await self.analyzer.run_full_analysis(pnu, bun, ji, user_input)
             
         if not raw_result or raw_result.get("status") != "success":
