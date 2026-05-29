@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Metropolis 폰트 대용 기하학적 폰트 세팅(없을 시 기본 sans) */
+@layer base {
+  body {
+    @apply bg-surface text-[#191c1e] antialiased;
+  }
+}
