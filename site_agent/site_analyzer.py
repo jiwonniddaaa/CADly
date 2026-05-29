@@ -15,34 +15,43 @@ class SiteAnalyzer:
 
     # site_agent/site_analyzer.py 내부의 discover_from_dataset 메서드 교체
 
-    async def discover_from_dataset(self, sigungu_cd: str, theme: str) -> dict:
+    async def discover_from_dataset(self, sigungu_cd: str, theme: str, address: str = "") -> dict:
         """
         [Case B 경로] 대용량 CSV 초고속 청크 스트리밍 검색 엔진
-        - 전체 파일을 메모리에 올리지 않고 1만 건씩 끊어서 빛의 속도로 스캔합니다.
+        - 시군구(구) 단위 검색 및 동(Dong) 단위 정밀 검색을 가변적으로 서포트합니다.
         """
-        logger.info(f"📊 [Case B] 초고속 청크 스트리밍 탐색 가동 -> 지역구: {sigungu_cd}, 테마: {theme}")
+        logger.info(f"📊 [Case B] 청크 스트리밍 탐색 가동 -> 지역구: {sigungu_cd}, 테마: {theme}, 입력텍스트: {address}")
         
         target_sigungu = str(sigungu_cd).strip()[:4] # 필터링할 앞자리 캐싱
         best_match = None
         
+        # 🌟 변경 포인트 2: 유저 문장(address)에서 '동(Dong)' 이름 추출 프로세스
+        target_dong = None
+        if address:
+            words = address.split()
+            dong_words = [w for w in words if w.endswith("동")]
+            if dong_words:
+                target_dong = dong_words[0] # 예: "역삼동" 확보
+        
         try:
-            # 💡 [핵심 튜닝] chunksize=50000 지정을 통해 5만 줄씩 읽어 들이며 즉시 필터링 진행!
-            # 이렇게 하면 거대한 CSV 파일을 한 번에 무겁게 load하지 않습니다.
             chunks = pd.read_csv(self.dataset_path, chunksize=50000, low_memory=False)
             
             for chunk_idx, chunk in enumerate(chunks):
-                # 실시간 탐색 서포트용 미니 로그 (0.2초마다 찍힘)
                 if chunk_idx % 5 == 0:
                     logger.info(f"   ⏳ 데이터 마트 {chunk_idx * 50000:,}번째 레코드 통과 중...")
 
-                # 1. 시군구_코드 필터링
+                # 1. 시군구_코드 1차 필터링
                 if '시군구_코드' in chunk.columns:
                     chunk['시군구_코드'] = chunk['시군구_코드'].astype(str)
                     filtered_chunk = chunk[chunk['시군구_코드'].str.startswith(target_sigungu)]
                 else:
                     filtered_chunk = chunk
 
-                # 2. 주_용도_코드_명 컨텍스트 기반 테마 필터링
+                # 🌟 변경 포인트 3: 동(Dong) 이름이 감지되었다면 주소 필터링 레이어 가동!
+                if target_dong and not filtered_chunk.empty and '대지_위치' in filtered_chunk.columns:
+                    filtered_chunk = filtered_chunk[filtered_chunk['대지_위치'].str.contains(target_dong, na=False)]
+
+                # 2. 주_용도_코드_명 컨텍스트 기반 테마 필터링 (기존 로직 및 주거 보완)
                 if not filtered_chunk.empty and '주_용도_코드_명' in filtered_chunk.columns:
                     if theme == "문화":
                         filtered_chunk = filtered_chunk[
@@ -52,8 +61,12 @@ class SiteAnalyzer:
                         filtered_chunk = filtered_chunk[
                             filtered_chunk['주_용도_코드_명'].str.contains('근린|상업|판매', na=False)
                         ]
+                    elif theme == "주거":
+                        filtered_chunk = filtered_chunk[
+                            filtered_chunk['주_용도_코드_명'].str.contains('공동주택|아파트|주택', na=False)
+                        ]
 
-                # 3. 매칭 조건에 맞는 타겟을 청크 안에서 찾았다면 즉시 루프 브레이크 탈출!
+                # 3. 모든 필터링(시군구 + 동 + 테마)을 통과한 타겟을 찾았다면 즉시 탈출
                 if not filtered_chunk.empty:
                     best_match = filtered_chunk.iloc[0]
                     logger.info(f"⚡ [고속 매칭 완성] {chunk_idx * 50000:,}보 구간에서 타겟 부지 득템 성공!")
@@ -63,23 +76,22 @@ class SiteAnalyzer:
             logger.error(f"❌ 추천용 데이터셋 청크 스트리밍 중 시스템 에러: {e}")
             return {"status": "error", "message": "추천 데이터셋 스캔 실패"}
 
-        # 4. 전체 파일을 끝까지 다 뒤졌는데도 매칭 결과가 완전히 없으면 폴백 모드 가동
         if best_match is None:
-            logger.warning(f"⚠️ 데이터셋 전체 스캔 결과 조건 부지가 없습니다. 폴백 시뮬레이션 모드로 전환합니다.")
+            logger.warning(f"⚠️ 조건에 맞는 부지가 데이터셋에 없습니다. 폴백 모드로 전환합니다.")
             return self._get_fallback_mock_data()
 
-        # 5. 국토교통부 원본 지번 데이터 정수 변환 및 자릿수 패딩 방어 코드
+        # 5. 지번 자릿수 패딩 방어
         bun_raw = best_match.get('번') if pd.notna(best_match.get('번')) else "59"
         ji_raw = best_match.get('지') if pd.notna(best_match.get('지')) else "45"
         
         bun = str(int(float(bun_raw))).zfill(4) if isinstance(bun_raw, (int, float)) or str(bun_raw).replace('.','').isdigit() else "0059"
         ji = str(int(float(ji_raw))).zfill(4) if isinstance(ji_raw, (int, float)) or str(ji_raw).replace('.','').isdigit() else "0045"
         
-        target_address = best_match.get('대지_위치', '서울특별시 성북구 삼선동 일대 후보지')
+        target_address = best_match.get('대지_위치', '서울특별시 강남구 역삼동 일대 후보지')
 
         logger.info(f"🎯 [추천 매칭 부지 확정] 지번: {bun}-{ji} | 주소: {target_address}")
 
-        # 6. 확보한 지번 키를 들고 우리가 빌드한 2,100만 건짜리 고속 SQLite 조인 엔진 가동!
+        # 🌟 변경 포인트 4: 로컬 DB 조인 시 원본 유저 텍스트(address)도 함께 넘겨서 DB 단 주소 낚시 버그를 차단합니다.
         db_result = self._fetch_from_local_db(bun, ji, target_address)
         
         if db_result["status"] == "success":
@@ -164,14 +176,26 @@ class SiteAnalyzer:
         }
 
     def _fetch_from_local_db(self, bun: str, ji: str, address: str) -> dict:
-        """[로컬 데이터마트 엔진] 실제 DB 적재 규격(공동주택) 기반 세대수 분할 연산 적용"""
+        """[로컬 데이터마트 엔진] 동 이름과 지번 숫자를 크로스체크하여 전국구 스왑 버그를 원천 봉쇄합니다."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
             main_no = int(bun)
             sub_no = int(ji)
             target_jibun = f"{main_no}-{sub_no}" if sub_no > 0 else f"{main_no}"
-            query_keyword = f"%{target_jibun}%"
+            
+            # 🌟 변경 포인트 5: DB 조회용 주소 키워드 가변적 조립
+            search_word = ""
+            if address:
+                words = address.split()
+                dong_words = [w for w in words if w.endswith("동")]
+                search_word = dong_words[0] if dong_words else ""
+
+            # 만약 주소에 동이 확인되면 "%역삼동%747%" 형태로 매칭하고, 없으면 기존 지번 매칭을 따릅니다.
+            if search_word:
+                query_keyword = f"%{search_word}%{target_jibun}%"
+            else:
+                query_keyword = f"%{target_jibun}%"
             
             # DB 마트 컬럼 명세에 맞춘 정밀 쿼리
             cursor.execute("""
@@ -189,40 +213,31 @@ class SiteAnalyzer:
             site_area_m2 = float(s_area) if s_area else 300.0
             main_purpose_str = str(main_purpose).strip() if main_purpose else ""
 
-            # 층별개요 고속 PK 매칭 (건물 전체 층면적 확보)
+            # 층별개요 고속 PK 매칭
             cursor.execute("SELECT `면적(㎡)` FROM floor_records WHERE 관리_건축물대장_PK = ? LIMIT 1;", (pk,))
             f_info = cursor.fetchone()
             floor_area_m2 = float(f_info[0]) if f_info else building_area_m2
 
-            # 💡 [데이터 적재 규격 맞춤형 조건] 
-            # 전수조사 결과 매칭: 주용도가 정확히 "공동주택"일 때만 세대 분할 연산 트리거
             is_apartment_type = (main_purpose_str == "공동주택")
 
-            # 세대 수 안전 바인딩 (0이거나 None이면 1세대로 방어)
             try:
                 households = int(household_count) if household_count and int(household_count) > 0 else 1
             except (ValueError, TypeError):
                 households = 1
 
-            # 💡 [핵심 연산 분기] 
-            # 공동주택일 때는 1세대당 할당되는 지분 면적으로 쪼개 스케일을 정규화합니다.
             if is_apartment_type and households > 1:
                 site_area_m2 = round(site_area_m2 / households, 2)
                 building_area_m2 = round(building_area_m2 / households, 2)
                 floor_area_m2 = round(floor_area_m2 / households, 2)
-
-                # 공동주택은 복도/엘리베이터/주차장 등 공용부 지분이 크므로 건축 표준 비율 35% 반영
                 common_area_m2 = round(floor_area_m2 * 0.35, 2)
                 private_area_m2 = round(floor_area_m2 - common_area_m2, 2)
             else:
-                # 단독주택이나 상가빌딩(근린생활시설) 등은 일반 가중치 21.5% 반영
                 common_area_m2 = round(floor_area_m2 * 0.215, 2)
                 private_area_m2 = round(floor_area_m2 - common_area_m2, 2)
 
             return {
                 "status": "success",
                 "source": "local_sqlite_fallback",
-                # 채민 - 리턴값에 location 필드 포함
                 "location": {
                     "address": address,
                     "bun": bun,

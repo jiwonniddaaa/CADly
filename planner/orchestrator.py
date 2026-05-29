@@ -170,8 +170,8 @@ Choose exactly one route.
 Routes:
 
 1. reference_agent
-- user asks for architectural references
-- user asks to improve or develop a design concept
+- User asks for architectural/interior design references, styles, ideas, or examples.
+- User wants to develop, clarify, or improve a design concept (e.g., "도시적", "모던한", "세련된 느낌").
 
 2. site_agent
 - user asks about site analysis
@@ -194,10 +194,17 @@ Routes:
 5. general_answer
 - general response that does not need another agent
 
-Important:
+CRITICAL ROUTING PRIORITIES & RULES:
 - If has_design_payload is true and the previous assistant message asked for confirmation and the user confirms, route to handoff_to_design.
 - If design_confirmation is false and the user asks to make/generate a drawing, route to extract_requirements first.
 - Return only JSON.
+
+Few-Shot Examples:
+- "강남구 역삼동 땅에 지을만한 세련된 아파트 사진이나 사례 좀 찾아봐" -> reference_agent (Focus is on visual concepts/examples)
+- "역삼동 747 아파트 규제 법규나 건폐율 알려줘" -> site_agent
+- "방 3개랑 거실 구조로 도면 한번 설계해볼래?" -> extract_requirements (Initial request without confirmed payload)
+- "그래, 그 조건대로 도면 바로 생성해줘." (When payload is ready) -> handoff_to_design
+- "너 이름이 뭐야?" -> general_answer
 
 {
   "route": "..."
