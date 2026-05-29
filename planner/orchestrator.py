@@ -486,10 +486,28 @@ def area_recommendation_node(state: PlanningState) -> PlanningState:
     assumptions = result.get("assumptions", [])
     assumption_text = "\n".join(f"- {item}" for item in assumptions)
 
+    # 면적 추천 결과 산출 기준 텍스트 생성
+    trace = result.get("rule_trace") or {}
+    criteria_lines = [
+        f"- 총면적 산출 소스: {trace.get('source', result.get('source'))}",
+        f"- 가구 프로파일: {trace.get('household_profile', 'unknown')}",
+    ]
+    if trace.get("main_purpose"):
+        criteria_lines.append(f"- 주용도: {trace.get('main_purpose')}")
+    if trace.get("legal_zone"):
+        criteria_lines.append(f"- 용도지역: {trace.get('legal_zone')}")
+    if trace.get("bc_rat"):
+        criteria_lines.append(f"- 건폐율 참조: {trace.get('bc_rat')}%")
+    if trace.get("vl_rat"):
+        criteria_lines.append(f"- 용적률 참조: {trace.get('vl_rat')}%")
+    criteria_text = "\n".join(criteria_lines)
+
     message = (
         "[면적 추천 결과]\n"
         f"- 권장 총면적: {result.get('recommended_total_area_m2')}㎡\n"
         f"- 산출 기준: {result.get('source')}\n\n"
+        "[적용 기준]\n"
+        f"{criteria_text}\n\n"
         "[공간별 권장 면적]\n"
         f"{chr(10).join(lines) if lines else '- 추천 가능한 공간이 없습니다.'}\n\n"
         "[가정 및 참고]\n"
