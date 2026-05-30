@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from planner.area_recommender import recommend_area_plan
+from planning.area_recommender import recommend_area_plan
 
 
 class PlanningState(TypedDict, total=False):

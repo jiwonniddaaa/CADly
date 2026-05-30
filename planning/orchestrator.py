@@ -11,8 +11,8 @@ from site_agent.site_agent import SiteAgent
 from site_agent.site_analyzer import SiteAnalyzer
 from site_agent.config import PublicDataConfig
 from site_agent.public_data_client import PublicDataClient
-from planner.planning_agent import PlanningAgent
-from generator.orchestrator import build_design_orchestrator
+from planning.planning_agent import PlanningAgent
+from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
 
 # 기본 초기화
@@ -163,17 +163,6 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
         "area_for_generation": area_for_generation,
     }
 
-def save_generator_graph_json(graph_data: dict, name: str) -> str:
-    output_dir = PROJECT_ROOT / "data" / "intermediate"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    graph_json_path = output_dir / f"{name}.json"
-
-    with open(graph_json_path, "w", encoding="utf-8") as f:
-        json.dump(graph_data, f, ensure_ascii=False, indent=2)
-
-    return str(graph_json_path)
-
 # 노드 정의
 def router_node(state: PlanningState) -> PlanningState:
     user_query = state["messages"][-1].content
@@ -200,8 +189,8 @@ Choose exactly one route.
 Routes:
 
 1. reference_agent
-- user asks for architectural references
-- user asks to improve or develop a design concept
+- User asks for architectural/interior design references, styles, ideas, or examples.
+- User wants to develop, clarify, or improve a design concept (e.g., "도시적", "모던한", "세련된 느낌").
 
 2. site_agent
 - user asks about site analysis
@@ -227,10 +216,17 @@ Routes:
 6. general_answer
 - general response that does not need another agent
 
-Important:
+CRITICAL ROUTING PRIORITIES & RULES:
 - If has_design_payload is true and the previous assistant message asked for confirmation and the user confirms, route to handoff_to_design.
 - If design_confirmation is false and the user asks to make/generate a drawing, route to extract_requirements first.
 - Return only JSON.
+
+Few-Shot Examples:
+- "강남구 역삼동 땅에 지을만한 세련된 아파트 사진이나 사례 좀 찾아봐" -> reference_agent (Focus is on visual concepts/examples)
+- "역삼동 747 아파트 규제 법규나 건폐율 알려줘" -> site_agent
+- "방 3개랑 거실 구조로 도면 한번 설계해볼래?" -> extract_requirements (Initial request without confirmed payload)
+- "그래, 그 조건대로 도면 바로 생성해줘." (When payload is ready) -> handoff_to_design
+- "너 이름이 뭐야?" -> general_answer
 
 {
   "route": "..."
@@ -296,6 +292,7 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
 
     update: PlanningState = {
         "references": result.get("search_results", result.get("images", [])),
+        "concept": result.get("concept_result") or state.get("concept"),
         "messages": [
             AIMessage(content=result.get("response", "레퍼런스 분석을 완료했습니다."))
         ],
@@ -537,32 +534,18 @@ def handoff_to_design_node(state: PlanningState) -> PlanningState:
 
     graph_data = convert_planning_payload_to_generator_graph(payload)
 
-    graph_json_path = save_generator_graph_json(
-        graph_data=graph_data,
-        name=name,
-    )
-
-    generator = build_design_orchestrator()
-
-    result = generator.invoke(
-        {
-            "graph_json_path": graph_json_path,
-            "model_path": "ckpts/exp/model250000.pt",
-            "out_dir": "outputs/cadly",
-            "name": name,
-        }
-    )
-
     return {
-        "design_result": result,
+        "active_orchestrator": "design",
+        "design_state": {
+            "graph_data": graph_data,
+            "name": name,
+        },
         "messages": [
             AIMessage(
                 content=(
-                    "도면 생성을 시작합니다.\n\n"
+                    "기획 정보를 바탕으로 설계 단계로 넘어갑니다.\n\n"
                     f"파일명: {name}\n"
-                    f"SVG 경로: {result.get('svg_path')}\n"
-                    f"DXF 경로: {result.get('dxf_path')}\n"
-                    "생성된 도면을 확인해주세요."
+                    "이제 도면 생성, 수정, CAD 연동 작업을 진행할 수 있습니다."
                 )
             )
         ],
@@ -572,7 +555,29 @@ def general_answer_node(state: PlanningState) -> PlanningState:
     user_query = state["messages"][-1].content
 
     response = high_llm.invoke([
-        SystemMessage(content="You are CADly's planning assistant. Answer clearly in Korean."),
+        SystemMessage(content="""
+You are CADly, an AI architectural planning and design assistant.
+
+CADly helps users with:
+- architectural planning
+- spatial programming
+- design concept development
+- site and zoning understanding
+- floorplan generation workflows
+- architectural reference exploration
+- CAD-based design assistance
+
+Always respond in natural Korean.
+
+Guidelines:
+- Be concise but helpful.
+- Maintain the tone of a professional architectural design assistant.
+- When users ask casual questions, respond naturally while maintaining CADly's identity.
+- When users ask about architecture, space, buildings, planning, floorplans, design concepts, or CAD workflows, answer as an architectural planning/design assistant.
+- Do not pretend to have completed actions that were not actually executed.
+- If the user asks about capabilities, explain CADly as an architectural planning and design support system.
+"""
+),
         HumanMessage(content=user_query),
     ])
 

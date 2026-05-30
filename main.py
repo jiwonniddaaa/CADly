@@ -5,7 +5,7 @@ import argparse
 import asyncio
 from langchain_core.messages import HumanMessage, AIMessage
 
-import planner.orchestrator as planning_module
+import planning.orchestrator as planning_module
 
 
 class DryRunDesignApp:
