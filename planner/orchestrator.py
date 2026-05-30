@@ -62,6 +62,14 @@ class PlanningState(TypedDict, total=False):
 
     # planning context
     concept: Optional[str]
+    # 예린 - 컨셉 키워드, 설계 의도, 내러티브, 구조화 결과, 업데이트 시간 추가
+    concept_keywords: Optional[List[str]]
+    design_intent: Optional[str]
+    narrative: Optional[str]
+    concept_structured: Optional[Dict[str, Any]]
+    concept_updated_at: Optional[str]
+    awaiting_concept_confirmation: bool
+
     references: Optional[List[Dict[str, Any]]]
     site_analysis: Optional[Dict[str, Any]]
 
@@ -179,6 +187,10 @@ def router_node(state: PlanningState) -> PlanningState:
     if state.get("area_decision_pending") or state.get("area_mode_pending"):
         return {"route": "planning_agent"}
 
+    # 컨셉 확인(레퍼런스 검색 여부) 대기 중이면 reference_agent로 보냅니다.
+    if state.get("awaiting_concept_confirmation"):
+        return {"route": "reference_agent"}
+
     conversation = messages_to_text(state["messages"])
     system_prompt = """
 You are the planning orchestrator router for CADly.
@@ -262,16 +274,50 @@ current_building_type = {state.get("building_type")}
     }
 
 def reference_agent_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    # 예린 - 마지막 메시지는 현재 사용자 입력, 이전 메시지는 채팅 기록하여 이전 대화 흐름까지 참조하도록 수정 
+    messages = state["messages"]
+    user_query = messages[-1].content
+    chat_history = messages[:-1]
 
-    result = reference_agent.chat(user_query)
+    concept_state = {
+        "concept_result": state.get("concept") or "",
+        "concept_keywords": state.get("concept_keywords") or [],
+        "design_intent": state.get("design_intent") or "",
+        "narrative": state.get("narrative") or "",
+        "concept_structured": state.get("concept_structured") or {},
+        "awaiting_concept_confirmation": state.get("awaiting_concept_confirmation", False),
+    }
 
-    return {
+    result = reference_agent.chat(
+        user_query,
+        chat_history=chat_history,
+        concept_state=concept_state,
+    )
+
+    update: PlanningState = {
         "references": result.get("search_results", result.get("images", [])),
         "messages": [
             AIMessage(content=result.get("response", "레퍼런스 분석을 완료했습니다."))
         ],
+        "awaiting_concept_confirmation": result.get(
+            "awaiting_concept_confirmation", False
+        ),
     }
+
+    # 예린 - 컨셉 개발 의도가 있거나 컨셉 결과가 있으면 컨셉 상태를 업데이트함
+    if result.get("intent") == "concept_develop" or result.get("concept_result"):
+        update.update(
+            {
+                "concept": result.get("concept_result") or state.get("concept"),
+                "concept_keywords": result.get("concept_keywords", []),
+                "design_intent": result.get("design_intent", ""),
+                "narrative": result.get("narrative", ""),
+                "concept_structured": result.get("concept_structured", {}),
+                "concept_updated_at": result.get("concept_updated_at", ""),
+            }
+        )
+
+    return update
 
 async def site_agent_node(state: PlanningState) -> PlanningState:
     user_query = state["messages"][-1].content

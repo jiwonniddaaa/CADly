@@ -76,6 +76,7 @@ async def main():
         "references": [],
         "site_analysis": None,
         "concept": None,
+        "awaiting_concept_confirmation": False,
     }
 
     print("CADly 챗봇을 시작합니다.")
