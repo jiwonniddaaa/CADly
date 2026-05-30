@@ -7,10 +7,6 @@ class Settings(BaseSettings):
     
     # Anthropic API 설정
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-
-    # Factchat-cloud API 설정
-    ANTHROPIC_BASE_URL: str = os.getenv("ANTHROPIC_BASE_URL", "")
-    ANTHROPIC_AUTH_TOKEN: str = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
     
     # GCP Custom Search API 설정
     # GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")

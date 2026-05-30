@@ -31,22 +31,14 @@ class GraphState(TypedDict):
 high_llm = ChatAnthropic(
     # 채민 - 3-5 버전이 안 돌아가서 4-5로 변경
     model="claude-sonnet-4-5-20250929", 
-    # 예린 - factchat-cloud 모델 사용
-    anthropic_api_url=settings.ANTHROPIC_BASE_URL,
-    anthropic_api_key=settings.ANTHROPIC_AUTH_TOKEN,
-
-    #anthropic_api_key=settings.ANTHROPIC_API_KEY,
+    anthropic_api_key=settings.ANTHROPIC_API_KEY,
     max_retries=3,
     default_headers={"anthropic-version": "2023-06-01"}
 )
 # 채민 - 라우팅 및 쿼리 관련 작업은 저사양 모델로 빠르게 처리
 low_llm = ChatAnthropic(
     model="claude-haiku-4-5-20251001",
-
-    # 예린 - factchat-cloud 모델 사용
-    anthropic_api_url=settings.ANTHROPIC_BASE_URL,
-    anthropic_api_key=settings.ANTHROPIC_AUTH_TOKEN,
-    # anthropic_api_key=settings.ANTHROPIC_API_KEY,
+    anthropic_api_key=settings.ANTHROPIC_API_KEY,
     max_retries=3,
     default_headers={"anthropic-version": "2023-06-01"}
 )
