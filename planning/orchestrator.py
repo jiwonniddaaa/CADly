@@ -11,7 +11,8 @@ from site_agent.site_agent import SiteAgent
 from site_agent.site_analyzer import SiteAnalyzer
 from site_agent.config import PublicDataConfig
 from site_agent.public_data_client import PublicDataClient
-from planning.verification_agent import VerificationAgent
+from planning.planning_agent import PlanningAgent
+from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
 
 # 기본 초기화
@@ -38,7 +39,7 @@ site_analyzer = SiteAnalyzer(
 )
 site_agent = SiteAgent(analyzer=site_analyzer)
 
-verification_agent = VerificationAgent()
+planning_agent = PlanningAgent()
 
 # State 정의
 class SpaceRequirement(TypedDict, total=False):
@@ -54,12 +55,21 @@ class PlanningState(TypedDict, total=False):
         "reference_agent",
         "site_agent",
         "extract_requirements",
+        "planning_agent",
         "handoff_to_design",
         "general_answer",
     ]
 
     # planning context
     concept: Optional[str]
+    # 예린 - 컨셉 키워드, 설계 의도, 내러티브, 구조화 결과, 업데이트 시간 추가
+    concept_keywords: Optional[List[str]]
+    design_intent: Optional[str]
+    narrative: Optional[str]
+    concept_structured: Optional[Dict[str, Any]]
+    concept_updated_at: Optional[str]
+    awaiting_concept_confirmation: bool
+
     references: Optional[List[Dict[str, Any]]]
     site_analysis: Optional[Dict[str, Any]]
 
@@ -79,6 +89,13 @@ class PlanningState(TypedDict, total=False):
 
     # design orchestrator result
     design_result: Optional[Dict[str, Any]]
+
+    # area recommendation state
+    area_recommendation_result: Optional[Dict[str, Any]]
+    area_decision_pending: bool
+    area_mode_pending: bool
+    next_step: Optional[str]
+    awaiting_manual_area_input: bool
 
 
 # 유틸리티 함수
@@ -148,8 +165,22 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
 
 # 노드 정의
 def router_node(state: PlanningState) -> PlanningState:
-    conversation = messages_to_text(state["messages"])
+    user_query = state["messages"][-1].content
 
+    # "직접 입력"을 선택한 직후 턴은 무조건 요구사항 추출 노드로 보냅니다.
+    if state.get("awaiting_manual_area_input"):
+        return {"route": "extract_requirements"}
+
+    # PlanningAgent가 사용자 면적 의사결정(yes/no 또는 입력 방식 선택)을 기다리는 상태면
+    # LLM 라우팅을 우회하고 planning_agent로 직접 보냅니다.
+    if state.get("area_decision_pending") or state.get("area_mode_pending"):
+        return {"route": "planning_agent"}
+
+    # 컨셉 확인(레퍼런스 검색 여부) 대기 중이면 reference_agent로 보냅니다.
+    if state.get("awaiting_concept_confirmation"):
+        return {"route": "reference_agent"}
+
+    conversation = messages_to_text(state["messages"])
     system_prompt = """
 You are the planning orchestrator router for CADly.
 
@@ -174,12 +205,15 @@ Routes:
 - user wants to organize the current plan
 - user asks to generate a drawing but has not confirmed a prepared design payload yet
 
-4. handoff_to_design
+4. planning_agent
+- follow-up response for area decision flow (yes/no, manual/recommend)
+
+5. handoff_to_design
 - Choose this if a has_design_payload is true
 - and the previous assistant message asked for final generation confirmation
 - and the user clearly confirms generation
 
-5. general_answer
+6. general_answer
 - general response that does not need another agent
 
 CRITICAL ROUTING PRIORITIES & RULES:
@@ -219,23 +253,68 @@ current_building_type = {state.get("building_type")}
 
     parsed = safe_json_loads(response.content)
     route = parsed.get("route", "general_answer")
+    # 예린 - 라우터가 허용된 값만 반환하도록 화이트리스트로 방어
+    allowed_routes = {
+        "reference_agent",
+        "site_agent",
+        "extract_requirements",
+        "planning_agent",
+        "handoff_to_design",
+        "general_answer",
+    }
+    if route not in allowed_routes:
+        route = "general_answer"
 
     return {
         "route": route,
     }
 
 def reference_agent_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    # 예린 - 마지막 메시지는 현재 사용자 입력, 이전 메시지는 채팅 기록하여 이전 대화 흐름까지 참조하도록 수정 
+    messages = state["messages"]
+    user_query = messages[-1].content
+    chat_history = messages[:-1]
 
-    result = reference_agent.chat(user_query)
-    
-    return {
+    concept_state = {
+        "concept_result": state.get("concept") or "",
+        "concept_keywords": state.get("concept_keywords") or [],
+        "design_intent": state.get("design_intent") or "",
+        "narrative": state.get("narrative") or "",
+        "concept_structured": state.get("concept_structured") or {},
+        "awaiting_concept_confirmation": state.get("awaiting_concept_confirmation", False),
+    }
+
+    result = reference_agent.chat(
+        user_query,
+        chat_history=chat_history,
+        concept_state=concept_state,
+    )
+
+    update: PlanningState = {
         "references": result.get("search_results", result.get("images", [])),
         "concept": result.get("concept_result") or state.get("concept"),
         "messages": [
             AIMessage(content=result.get("response", "레퍼런스 분석을 완료했습니다."))
         ],
+        "awaiting_concept_confirmation": result.get(
+            "awaiting_concept_confirmation", False
+        ),
     }
+
+    # 예린 - 컨셉 개발 의도가 있거나 컨셉 결과가 있으면 컨셉 상태를 업데이트함
+    if result.get("intent") == "concept_develop" or result.get("concept_result"):
+        update.update(
+            {
+                "concept": result.get("concept_result") or state.get("concept"),
+                "concept_keywords": result.get("concept_keywords", []),
+                "design_intent": result.get("design_intent", ""),
+                "narrative": result.get("narrative", ""),
+                "concept_structured": result.get("concept_structured", {}),
+                "concept_updated_at": result.get("concept_updated_at", ""),
+            }
+        )
+
+    return update
 
 async def site_agent_node(state: PlanningState) -> PlanningState:
     user_query = state["messages"][-1].content
@@ -344,43 +423,22 @@ Conversation:
         "edges": parsed.get("edges", current_edges),
         "output_name": parsed.get("output_name") or current_output_name,
         "building_type": parsed.get("building_type") or current_building_type,
+        "awaiting_manual_area_input": False,
         "design_confirmation": False,
     }
 
-def verification_agent_node(state: PlanningState) -> PlanningState:
-    spaces = state.get("spaces", [])
-    edges = state.get("edges", [])
-    output_name = state.get("output_name")
-    building_type = state.get("building_type")
-    site_analysis = state.get("site_analysis")
-
-    result = verification_agent.verify(
-       spaces=spaces,
-       edges=edges,
-       output_name=output_name,
-       building_type=building_type,
-       site_analysis=site_analysis,
-    )
-
-    ready_for_design = result.get("ready_for_design", False)
-    missing_requirements = result.get("missing_requirements", [])
-
-    message = result.get("message")
-
-    if not message:
-        if ready_for_design:
-            message = "도면 생성 조건을 모두 확인하였습니다."
-        else:
-            message = "도면 생성 전에 추가 정보가 필요합니다.\n\n"
-            for idx, item in enumerate(missing_requirements, start=1):
-                message += f"{idx}. {item}\n"
-
+def planning_agent_node(state: PlanningState) -> PlanningState:
+    result = planning_agent.run(state)
     return {
-        "ready_for_design": ready_for_design,
-        "missing_requirements": missing_requirements,
-        "messages": [
-            AIMessage(content=message)
-        ],
+        "ready_for_design": result.get("ready_for_design", False),
+        "missing_requirements": result.get("missing_requirements", []),
+        "spaces": result.get("spaces", state.get("spaces", [])),
+        "area_recommendation_result": result.get("area_recommendation_result"),
+        "area_decision_pending": result.get("area_decision_pending", False),
+        "area_mode_pending": result.get("area_mode_pending", False),
+        "awaiting_manual_area_input": result.get("awaiting_manual_area_input", False),
+        "next_step": result.get("next_step"),
+        "messages": result.get("messages", []),
     }
 
 def build_design_payload_node(state: PlanningState) -> PlanningState:
@@ -533,9 +591,16 @@ Guidelines:
 def route_after_router(state: PlanningState) -> str:
     return state.get("route", "general_answer")
 
-def route_after_verification(state: PlanningState) -> str:
-    if state.get("ready_for_design"):
+def route_after_planning_agent(state: PlanningState) -> str:
+    if state.get("area_decision_pending") or state.get("area_mode_pending"):
+        return "end"
+
+    if state.get("next_step") == "build_design_payload":
         return "build_design_payload"
+
+    if not state.get("ready_for_design"):
+        return "end"
+
     return "end"
 
 # graph 빌드 함수
@@ -546,7 +611,7 @@ def build_planning_orchestrator():
     graph.add_node("reference_agent", reference_agent_node)
     graph.add_node("site_agent", site_agent_node)
     graph.add_node("extract_requirements", extract_requirements_node)
-    graph.add_node("verification_agent", verification_agent_node)
+    graph.add_node("planning_agent", planning_agent_node)
     graph.add_node("build_design_payload", build_design_payload_node)
     graph.add_node("handoff_to_design", handoff_to_design_node)
     graph.add_node("general_answer", general_answer_node)
@@ -560,6 +625,7 @@ def build_planning_orchestrator():
             "reference_agent": "reference_agent",
             "site_agent": "site_agent",
             "extract_requirements": "extract_requirements",
+            "planning_agent": "planning_agent",
             "handoff_to_design": "handoff_to_design",
             "general_answer": "general_answer",
         },
@@ -569,17 +635,16 @@ def build_planning_orchestrator():
     graph.add_edge("site_agent", END)
     graph.add_edge("general_answer", END)
 
-    graph.add_edge("extract_requirements", "verification_agent")
+    graph.add_edge("extract_requirements", "planning_agent")
 
     graph.add_conditional_edges(
-        "verification_agent",
-        route_after_verification,
+        "planning_agent",
+        route_after_planning_agent,
         {
             "build_design_payload": "build_design_payload",
             "end": END,
         },
     )
-    
     graph.add_edge("build_design_payload", END)
     graph.add_edge("handoff_to_design", END)
 

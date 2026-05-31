@@ -1,8 +1,8 @@
 import sqlite3
 import pandas as pd
 
-csv_path = "./mart_djy_03_clean.csv"
-db_path = "./mart_building_data.db"
+csv_path = "./data/mart_djy_03_clean.csv"
+db_path = "./data/mart_building_data.db"
 
 print("🔄 1. 표제부(03) 적재 시작 (오버플로우 방어 모드)...")
 conn = sqlite3.connect(db_path)
