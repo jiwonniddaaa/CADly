@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from typing import TypedDict, Optional, Literal, Annotated, List, Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -52,6 +53,9 @@ class PlanningState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
 
     route: Literal[
+        "image_understanding",     # [추가] 이미지 판별 진입점
+        "sketch_agent_node",        # [추가] 손도면 분석
+        "sketch_extract_node",      # [추가] 손도면 스케마 변환
         "reference_agent",
         "site_agent",
         "extract_requirements",
@@ -97,6 +101,13 @@ class PlanningState(TypedDict, total=False):
     next_step: Optional[str]
     awaiting_manual_area_input: bool
 
+    # [추가] 이미지 처리용 컨텍스트 정보
+    image_path: Optional[str]
+    user_input: Optional[str]
+    image_type: Optional[str]
+    image_classification: Optional[Dict[str, Any]]
+    sketch_analysis: Optional[Dict[str, Any]]
+    sketch_result: Optional[Dict[str, Any]]
 
 # 유틸리티 함수
 def messages_to_text(messages: List[BaseMessage]) -> str:
@@ -116,6 +127,24 @@ def safe_json_loads(text: str) -> dict:
         if start != -1 and end != -1:
             return json.loads(text[start:end + 1])
         raise ValueError(f"JSON parsing failed: {text}")
+
+def _encode_image(image_path: str) -> Tuple[str, str]:
+    path = Path(image_path)
+    if not path.exists():
+        raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
+
+    mime_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+    media_type = mime_map.get(path.suffix.lower())
+    if media_type is None:
+        raise ValueError(f"지원하지 않는 이미지 형식입니다: {path.suffix}")
+
+    image_data = base64.b64encode(path.read_bytes()).decode("utf-8")
+    return image_data, media_type
 
 def room_type_to_label(room_type: str) -> int:
     mapping = {
@@ -165,7 +194,24 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
 
 # 노드 정의
 def router_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    
+    # 1. messages의 마지막 사용자 입력에서 이미지 경로가 숨어있는지 '오케스트레이터'가 직접 찾음
+    user_query = state["messages"][-1].content if state["messages"] else ""
+    
+    extracted_image_path = None
+    words = user_query.split()
+    for word in words:
+        if word.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            extracted_image_path = word
+            break
+
+    # 2. 이미지 경로가 발견되면, state를 업데이트하고 즉시 이미지 이해 노드로 강제 라우팅
+    if extracted_image_path:
+        # 다음 노드들이 사용할 수 있도록 image_path를 상태에 저장하고 라우팅 지시
+        return {
+            "route": "image_understanding",
+            "image_path": extracted_image_path
+        }
 
     # "직접 입력"을 선택한 직후 턴은 무조건 요구사항 추출 노드로 보냅니다.
     if state.get("awaiting_manual_area_input"):
@@ -255,6 +301,7 @@ current_building_type = {state.get("building_type")}
     route = parsed.get("route", "general_answer")
     # 예린 - 라우터가 허용된 값만 반환하도록 화이트리스트로 방어
     allowed_routes = {
+        "image_understanding",
         "reference_agent",
         "site_agent",
         "extract_requirements",
@@ -268,6 +315,184 @@ current_building_type = {state.get("building_type")}
     return {
         "route": route,
     }
+
+def image_understanding_node(state: PlanningState) -> PlanningState:
+    """이미지가 손도면인지, 레퍼런스 이미지인지 분류하는 라우터 노드"""
+    image_path = state.get("image_path")
+    user_input = state["messages"][-1].content if state["messages"] else ""
+
+    if not image_path:
+        return {"route": "general_answer"}
+
+    try:
+        image_data, media_type = _encode_image(image_path)
+    except Exception as e:
+        return {
+            "route": "general_answer",
+            "messages": [AIMessage(content=f"이미지 파일을 읽는 중 오류가 발생했습니다: {e}")]
+        }
+
+    prompt = """
+너는 CADly의 이미지 입력 라우터다.
+사용자의 이미지가 어떤 유형인지 판단해라.
+
+분류 기준:
+1. hand_sketch: 손으로 그린 평면도, 벽, 문, 창, 공간 이름이 있는 스케치
+2. reference_image: 건축 레퍼런스 사진, 실내/외 인테리어 사진, 분위기/스타일 참고용 사진
+3. unsupported_image: 위 둘 다 아니거나 흐려서 분석이 불가능한 경우
+
+사용자 입력 문맥:
+{user_input}
+
+반드시 JSON만 출력해라:
+{
+  "image_type": "hand_sketch | reference_image | unsupported_image",
+  "confidence": 0.0,
+  "reason": "판단 이유"
+}
+"""
+    response = low_llm.invoke([
+        HumanMessage(content=[
+            {"type": "text", "text": prompt},
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}}
+        ])
+    ])
+
+    result = safe_json_loads(response.content)
+    image_type = result.get("image_type", "unsupported_image")
+
+    if image_type == "hand_sketch":
+        route = "sketch_agent_node"
+    elif image_type == "reference_image":
+        route = "reference_agent"
+    else:
+        route = "general_answer"
+
+    return {
+        "route": route,
+        "image_type": image_type,
+        "image_classification": result,
+        "user_input": user_input
+    }
+
+
+def sketch_agent_node(state: PlanningState) -> PlanningState:
+    """손도면 이미지를 시각적으로 상세 분석하는 노드"""
+    image_path = state.get("image_path")
+    user_input = state.get("user_input", "")
+
+    try:
+        image_data, media_type = _encode_image(image_path)
+        prompt = f"""
+너는 CADly의 손도면 분석 전문가다.
+목표: 손도면 이미지를 보고 실제로 보이는 공간 정보를 최대한 객관적으로 분석해라.
+
+중요:
+- 아직 CADly schema로 변환하지 마라. 이미지 관찰 결과만 정리해라.
+- 확실하지 않은 내용은 uncertain_parts에 넣어라.
+
+사용자 추가 요청:
+{user_input}
+
+반드시 JSON만 출력해라.
+출력 형식:
+{{
+  "status": "success",
+  "visible_spaces": [
+    {{"raw_label": "거실", "interpreted_type": "living_room", "relative_position": "center", "approx_size": "large", "confidence": 0.0}}
+  ],
+  "visible_connections": [
+    {{"from": "거실", "to": "주방", "relationship": "adjacent", "confidence": 0.0}}
+  ],
+  "visible_openings": [],
+  "visible_windows": [],
+  "overall_layout_description": "...",
+  "uncertain_parts": []
+}}
+"""
+        response = high_llm.invoke([
+            HumanMessage(content=[
+                {"type": "text", "text": prompt},
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}}
+            ])
+        ])
+
+        analysis = safe_json_loads(response.content)
+        if analysis.get("status") != "success":
+            return {
+                "route": "general_answer",
+                "messages": [AIMessage(content="손도면 이미지 관찰 내용을 추출하는 데 실패했습니다.")]
+            }
+
+        return {
+            "route": "sketch_extract_node",
+            "sketch_analysis": analysis
+        }
+    except Exception as e:
+        return {
+            "route": "general_answer",
+            "messages": [AIMessage(content=f"손도면 분석 중 오류 발생: {e}")]
+        }
+
+
+def sketch_extract_node(state: PlanningState) -> PlanningState:
+    """손도면 분석 결과를 정형화하여 최종 공간 스케마(spaces, edges)에 주입하는 노드"""
+    sketch_analysis = state.get("sketch_analysis")
+    user_input = state.get("user_input", "")
+
+    try:
+        prompt = f"""
+너는 CADly의 schema normalization 전문가다.
+목표: 손도면 분석 결과를 CADly 표준 schema로 변환해라.
+
+CADly schema 형식:
+{{
+  "spaces": [
+    {{"id": "living_room1", "room_type": "living_room", "area": null, "notes": "..."}}
+  ],
+  "edges": [
+    ["living_room1", "outside"]
+  ],
+  "output_name": null,
+  "building_type": null
+}}
+
+규칙:
+- room_type은 living_room, kitchen, bedroom, bathroom, entrance, dining_room, storage, balcony, corridor, unknown 중 하나만 사용.
+
+사용자 요청: {user_input}
+손도면 분석 결과: {json.dumps(sketch_analysis, ensure_ascii=False)}
+반드시 JSON만 출력해라.
+"""
+        response = low_llm.invoke([HumanMessage(content=prompt)])
+        cadly_schema = safe_json_loads(response.content)
+
+        # 사용자 답변 피드백 문장 생성
+        answer_prompt = f"""
+너는 CADly의 사용자 응답 생성 담당자다.
+단순히 JSON을 나열하지 말고, 사용자의 요청과 손도면에서 해석한 공간 배치를 자연스럽게 설명해라.
+
+사용자 요청: {user_input}
+손도면 분석: {json.dumps(sketch_analysis, ensure_ascii=False)}
+CADly schema: {json.dumps(cadly_schema, ensure_ascii=False)}
+"""
+        answer_res = low_llm.invoke([HumanMessage(content=answer_prompt)])
+
+        # [동기화] 분석된 결과물들을 메인 기획 필드들에 주입 및 초기화
+        return {
+            "spaces": cadly_schema.get("spaces", []),
+            "edges": cadly_schema.get("edges", []),
+            "output_name": cadly_schema.get("output_name") or state.get("output_name"),
+            "building_type": cadly_schema.get("building_type") or state.get("building_type"),
+            "sketch_result": cadly_schema,
+            "messages": [AIMessage(content=answer_res.content)],
+            "image_path": None  # 이미지 완료 후 None 처리하여 다음 대화 무한루프 방지
+        }
+    except Exception as e:
+        return {
+            "image_path": None,
+            "messages": [AIMessage(content=f"CADly 기획 스케마 변환 중 오동작이 발생했습니다: {e}")]
+        }
 
 def reference_agent_node(state: PlanningState) -> PlanningState:
     # 예린 - 마지막 메시지는 현재 사용자 입력, 이전 메시지는 채팅 기록하여 이전 대화 흐름까지 참조하도록 수정 
@@ -591,6 +816,9 @@ Guidelines:
 def route_after_router(state: PlanningState) -> str:
     return state.get("route", "general_answer")
 
+def route_after_image_understanding(state: PlanningState) -> str:
+    return state.get("route", "general_answer")
+
 def route_after_planning_agent(state: PlanningState) -> str:
     if state.get("area_decision_pending") or state.get("area_mode_pending"):
         return "end"
@@ -608,6 +836,9 @@ def build_planning_orchestrator():
     graph = StateGraph(PlanningState)
 
     graph.add_node("router", router_node)
+    graph.add_node("image_understanding", image_understanding_node) # 추가
+    graph.add_node("sketch_agent_node", sketch_agent_node)           # 추가
+    graph.add_node("sketch_extract_node", sketch_extract_node)       # 추가
     graph.add_node("reference_agent", reference_agent_node)
     graph.add_node("site_agent", site_agent_node)
     graph.add_node("extract_requirements", extract_requirements_node)
@@ -622,6 +853,7 @@ def build_planning_orchestrator():
         "router",
         route_after_router,
         {
+            "image_understanding": "image_understanding", # 이미지 진입 분기 추가
             "reference_agent": "reference_agent",
             "site_agent": "site_agent",
             "extract_requirements": "extract_requirements",
@@ -630,6 +862,21 @@ def build_planning_orchestrator():
             "general_answer": "general_answer",
         },
     )
+    
+    # 이미지 전용 조건부 에지 맵 추가
+    graph.add_conditional_edges(
+        "image_understanding",
+        route_after_image_understanding,
+        {
+            "sketch_agent_node": "sketch_agent_node",
+            "reference_agent": "reference_agent",
+            "general_answer": "general_answer"
+        }
+    )
+
+    # 손도면 흐름 연결 후 한 턴 대기종료
+    graph.add_edge("sketch_agent_node", "sketch_extract_node")
+    graph.add_edge("sketch_extract_node", END)
 
     graph.add_edge("reference_agent", END)
     graph.add_edge("site_agent", END)

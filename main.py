@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from langchain_core.messages import HumanMessage, AIMessage
 
 from planning.orchestrator import build_planning_orchestrator
@@ -66,7 +67,7 @@ def update_state_without_messages(state: dict, results: dict):
 
     state.update(update)
 
-def main():
+async def main():
     planning_app = build_planning_orchestrator()
     design_app = build_design_orchestrator()
 
@@ -97,7 +98,7 @@ def main():
         active_orchestrator = conversation_state.get("active_orchestrator")
 
         if active_orchestrator == "design":
-            result = design_app.invoke(
+            result = await design_app.ainvoke(
                 {
                     **conversation_state.get("design_state", {}),
                     "messages": conversation_state["messages"],
@@ -108,7 +109,7 @@ def main():
             update_state_without_messages(conversation_state["design_state"], result)
 
         else:
-            result = planning_app.invoke(
+            result = await planning_app.ainvoke(
                 {
                     **conversation_state.get("planning_state", {}),
                     "messages": conversation_state["messages"],
@@ -129,4 +130,4 @@ def main():
         print_response(result)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

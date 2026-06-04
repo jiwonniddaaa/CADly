@@ -37,9 +37,9 @@ class PublicDataConfig:
 
 class LLMConfig:
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = "gpt-4o"
+        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.model = "claude-haiku-4-5-20251001"
 
     def validate(self):
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY가 .env 파일에 없습니다. 프로젝트 최상위에 .env 설정을 확인하세요.")
+            raise ValueError("ANTHROPIC_API_KEY가 .env 파일에 없습니다. 프로젝트 최상위에 .env 설정을 확인하세요.")
