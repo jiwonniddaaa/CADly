@@ -55,6 +55,25 @@ def save_graph_json(state: CADlyGenerationState) -> CADlyGenerationState:
     }
 
 def run_repair_agent(state: CADlyGenerationState) -> CADlyGenerationState:
+    repair_input = {
+        **state,
+        # repair loop counters
+        "resample_count": 0,
+        "max_resamples": state.get("max_resamples", 2),
+
+        "postprocess_count": 0,
+        "max_postprocesses": state.get("max_postprocesses", 1),
+
+        # repair routing 초기화
+        "repair_route": "",
+
+        # 이전 검증 결과 초기화
+        "validation_errors": [],
+        "verification_warnings": [],
+
+        "repair_history": [],
+    }
+
     return repair_agent.invoke(state)
 
 def should_continue_after_validation(state: CADlyGenerationState) -> str:
@@ -74,13 +93,15 @@ def should_continue_after_sampling(state: CADlyGenerationState) -> str:
 
 def should_continue_after_repair(state: CADlyGenerationState) -> str:
     if state.get("status") in [
-        "repair_failed",
-        "verification_failed",
-        "error",
+        "repair_success",
+        "repair_success_with_warnings",
     ]:
         return "end"
 
-    return "continue"
+    if state.get("enable_cad_import", False):
+        return "cad_import_node"
+
+    return "end"
 
 def build_design_orchestrator():
     graph = StateGraph(CADlyGenerationState)
