@@ -1,193 +1,211 @@
 import React, { useState } from 'react';
-import {
-  Download, FileText, Image as ImageIcon, FileCode,
-  ArrowLeft, RotateCcw, Loader2
-} from 'lucide-react';
-import { cadlyApi } from '../services/api'; // api 연동
+import { ArrowLeft, Menu, FileText, Loader2, ArrowUpRight } from 'lucide-react';
+import { cadlyApi } from '../services/api';
 
-const CADGenerationView = ({ onNavigateBack }) => {
-  const [generationStatus, setGenerationStatus] = useState('idle'); // 'idle' | 'generating' | 'completed'
-  const [generatedData, setGeneratedData] = useState(null); // 백엔드에서 받은 도면 데이터 저장
+const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
+  // 1. 우측 제어 사이드바 토글 상태
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  // 2. 3D 모델링 플로우 상태: 'initial' -> 'format_selection' -> 'generated'
+  const [modelingStep, setModelingStep] = useState('initial');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedFile, setGeneratedFile] = useState(null);
 
-  // [기능 1] 백엔드에 도면 생성 요청
-  const handleGenerate = async () => {
-    // 이미 완료된 상태라면 다운로드 함수 실행 후 리턴
-    if (generationStatus === 'completed') {
-      downloadAssets();
-      return;
-    }
-
-    try {
-      setGenerationStatus('generating');
-      
-      // 실제 백엔드 API 호출 (project_id 및 specs 전달)
-      const response = await cadlyApi.generateCad('proj_123', { specs: 'Urban Cabin' });
-      
-      if (response.success) {
-        setGeneratedData(response); // svg_content, dxf_content 등 상태에 저장
-        setGenerationStatus('completed');
-      } else {
-        throw new Error('Generation failed on server');
-      }
-    } catch (error) {
-      console.error(error);
-      alert('CAD generation failed. Please try again.');
-      setGenerationStatus('idle');
-    }
-  };
-
-  // [기능 2] 다운로드 버튼 클릭 시 파일 저장 처리
-  const downloadAssets = () => {
-    if (!generatedData) return;
-
-    // 1. SVG 파일 다운로드
-    const svgBlob = new Blob([generatedData.svg_content], { type: 'image/svg+xml' });
-    const svgUrl = URL.createObjectURL(svgBlob);
-    triggerDownload(svgUrl, `${generatedData.filename}.svg`);
-
-    // 2. DXF 파일 다운로드 (Base64 디코딩)
-    // 팁: 여러 파일을 동시에 다운로드하면 브라우저가 차단할 수 있으므로 약간의 딜레이를 줍니다.
-    setTimeout(() => {
-      const dxfBlob = base64ToBlob(generatedData.dxf_content, 'application/dxf');
-      const dxfUrl = URL.createObjectURL(dxfBlob);
-      triggerDownload(dxfUrl, `${generatedData.filename}.dxf`);
-    }, 500);
-  };
-
-  // 다운로드 트리거 헬퍼 함수
-  const triggerDownload = (url, filename) => {
+  // 2D SVG 다운로드 함수
+  const handleExportFile = () => {
+    if (!cadSvgContent) return;
+    const blob = new Blob([cadSvgContent], { type: 'image/svg+xml;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
+    link.href = downloadUrl;
+    link.download = `floorplan_rev_01.svg`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url); // 메모리 누수 방지
+    URL.revokeObjectURL(downloadUrl);
   };
 
-  // Base64 -> Blob 변환 헬퍼 함수
-  const base64ToBlob = (base64, mimeType) => {
-    const byteCharacters = atob(base64);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
+  // 3D 파일 생성용 FastAPI 연동 함수
+  const handleGenerate3D = async (format) => {
+    setIsGenerating(true);
+    try {
+      const blobData = await cadlyApi.generate3DModel(projectId, format);
+      setGeneratedFile({
+        blob: blobData,
+        name: `preview_in_3d${format}`,
+        format: format,
+        size: (blobData.size / 1024 / 1024).toFixed(1) + ' MB'
+      });
+      setModelingStep('generated');
+    } catch (error) {
+      console.error("3D 모델 생성 실패:", error);
+      alert("파일 생성에 실패했습니다.");
+    } finally {
+      setIsGenerating(false);
     }
-    const byteArray = new Uint8Array(byteNumbers);
-    return new Blob([byteArray], { type: mimeType });
+  };
+
+  // 3D 파일 로컬 다운로드 함수
+  const handleDownload3D = () => {
+    if (!generatedFile) return;
+    const downloadUrl = URL.createObjectURL(generatedFile.blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = generatedFile.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(downloadUrl);
   };
 
   return (
-    <div className="flex h-full flex-col bg-[#0a192f]">
-      {/* Top Navigation Bar */}
-      <header className="h-[72px] border-b border-blue-900/40 flex items-center px-8 bg-white justify-between w-full">
-        <div className="flex gap-6 font-display font-semibold text-secondary">
-          <button onClick={onNavigateBack} className="hover:text-primary transition-colors text-secondary flex items-center gap-1">
-            <ArrowLeft size={16}/> Site / Reference Agent
-          </button>
-          <span className="text-outline">|</span>
-          <button className="text-primary font-bold">Generation</button>
-        </div>
-      </header>
-
-      {/* Main Body Grid */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* CAD Viewer Canvas */}
-        <div className="flex-1 flex flex-col relative bg-[#071120]">
-          <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'linear-gradient(#3b82f6 1px, transparent 1px), linear-gradient(90deg, #3b82f6 1px, transparent 1px)', backgroundSize: '32px 32px' }} />
+    <div className="flex h-full w-full bg-white font-sans relative overflow-hidden">
+      
+      {/* ================= 메인 캔버스 워크스페이스 영역 ================= */}
+      <div className="flex-1 flex flex-col relative h-full transition-all duration-300">
+        
+        {/* 상단 헤더: 하얀색 고정 배경, 하단 연한 구분선 */}
+        <header className="w-full h-16 flex items-center justify-between px-10 bg-white border-b border-slate-100 z-10 shrink-0">
           
-          <div className="absolute top-6 left-6 flex bg-white rounded-soft shadow-blueprint border border-outline p-1 z-10">
-            <button className="p-2 hover:bg-surface rounded-soft text-secondary"><i className="fas fa-mouse-pointer"></i></button>
-            <button className="p-2 hover:bg-surface rounded-soft text-secondary"><i className="fas fa-hand-paper"></i></button>
+          {/* 좌측 CHAT 이동 버튼: text-xs, font-mono, 딥네이비 색상 및 크기 동기화 */}
+          <button 
+            onClick={onNavigateToChat}
+            className="flex items-center gap-1.5 font-mono text-xs font-bold text-[#002d5a] hover:opacity-70 transition-opacity bg-transparent outline-none"
+          >
+            <ArrowLeft size={14} strokeWidth={2.5} />
+            CHAT
+          </button>
+          
+          {/* 우측 햄버거 메뉴 버튼: 화이트 헤더에 걸맞게 딥네이비 커스텀 및 크기 밸런싱 */}
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+            className="text-[#002d5a] hover:opacity-70 transition-opacity bg-transparent outline-none"
+          >
+            <Menu size={18} strokeWidth={2.5} />
+          </button>
+          
+        </header>
+
+        {/* 메인 도면 영역 (헤더 아래 캔버스 파트는 어두운 네이비색 유지) */}
+        <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-[#0b132b]">
+          
+          {/* 좌측 상단 상태 뱃지 (상단 화이트 헤더 영역 확보에 맞춰 top-6 안전 배치) */}
+          <div className="absolute top-6 left-6 z-20 border border-[#4a5568] text-[#81e6d9] px-4 py-1.5 text-[11px] font-mono tracking-widest rounded bg-[#0b132b]/80 flex items-center gap-2">
+            ACTIVE VIEW: 2D FLOORPLAN_B1 <span className="w-1.5 h-1.5 rounded-full bg-[#fbd38d]"></span>
           </div>
 
-          <div className="flex-1 flex items-center justify-center p-12 z-0">
-            <div className="w-full max-w-4xl flex justify-center">
+          {/* 모눈종이 격자선 배경 */}
+          <div className="absolute inset-0 bg-[linear-gradient(to_right,#1e293b_1px,transparent_1px),linear-gradient(to_bottom,#1e293b_1px,transparent_1px)] bg-[size:4rem_4rem] opacity-20"></div>
+          
+          {cadSvgContent ? (
+            <div dangerouslySetInnerHTML={{ __html: cadSvgContent }} className="relative z-10 w-full h-full" />
+          ) : (
+             <div className="relative z-10 w-[600px] h-[400px] border border-dashed border-[#4a5568] flex items-center justify-center text-[#a0aec0]">
+               [도면 미리보기 영역]
+             </div>
+          )}
 
-              {generationStatus === 'idle' && (
-                <div className="border border-blue-500/30 p-8 bg-[#0a192f] shadow-2xl rounded-container w-full max-w-2xl text-center text-blue-400 font-mono text-sm border-dashed">
-                  <div className="py-20 border border-blue-500/20">
-                    READY TO GENERATE
-                    <p className="text-xs text-blue-500/60 mt-2">CLICK GENERATE TO CREATE CAD OUTPUT</p>
-                  </div>
-                </div>
-              )}
-
-              {generationStatus === 'generating' && (
-                <div className="border border-blue-500/30 p-8 bg-[#0a192f] shadow-2xl rounded-container w-full max-w-2xl text-center text-blue-400 font-mono text-sm border-dashed">
-                  <div className="py-20 border border-blue-500/20 flex flex-col items-center">
-                    <Loader2 size={40} className="animate-spin mb-6 text-blue-400" />
-                    GENERATING CAD OUTPUT...
-                    <p className="text-xs text-blue-500/60 mt-2">PROCESSING FLOOR PLAN AND STRUCTURE DATA</p>
-                  </div>
-                </div>
-              )}
-
-              {/* 🚨 생성 완료: 캔버스에 SVG를 렌더링합니다! */}
-              {generationStatus === 'completed' && generatedData && (
-                <div className="border border-blue-500/30 bg-[#0a192f] shadow-2xl w-full flex justify-center items-center p-4">
-                  {/* dangerouslySetInnerHTML을 사용해 텍스트 형태의 SVG를 실제 그래픽으로 변환 */}
-                  <div 
-                    className="w-full h-full flex justify-center items-center [&>svg]:w-full [&>svg]:h-auto"
-                    dangerouslySetInnerHTML={{ __html: generatedData.svg_content }} 
-                  />
-                </div>                    
-              )}
-
+          {/* 우측 하단 Open Export Panel 플로팅 버튼 */}
+          {!isSidebarOpen && (
+            <div className="absolute bottom-6 right-6 z-20">
+              <button 
+                onClick={() => setIsSidebarOpen(true)}
+                className="bg-[#002d5a] hover:bg-[#001f3f] text-white px-5 py-3 rounded-lg flex items-center gap-2 text-xs font-bold tracking-wider shadow-lg border border-[#1c2541] transition-all duration-200 transform hover:scale-105"
+              >
+                <ArrowUpRight size={15} />
+                Open Export Panel
+              </button>
             </div>
+          )}
+          
+        </div>
+      </div>
+
+      {/* ================= 우측 하얀색 제어 사이드바 영역 ================= */}
+      {isSidebarOpen && (
+        <div className="w-[380px] bg-white text-slate-800 h-full border-l border-slate-200 overflow-y-auto shadow-2xl z-30 shrink-0 animate-in fade-in slide-in-from-right duration-200">
+          <div className="p-8 flex flex-col gap-10">
+            
+            <section>
+              <h3 className="text-lg font-bold text-[#002d5a] mb-4">Files</h3>
+              <div className="border border-slate-200 bg-slate-50 rounded-lg p-4 flex items-center gap-4">
+                <FileText className="text-slate-400" size={24} />
+                <div>
+                  <p className="text-[13px] font-bold text-[#002d5a]">floorplan_rev_01.dxf</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5 tracking-wider">CAD INTERCHANGE | 4.2 MB</p>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold text-[#002d5a]">Plan Specs</h3>
+                <span className="bg-teal-50 text-teal-700 px-2 py-1 text-[10px] font-bold rounded border border-teal-100">VALIDATED</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
+                  <p className="text-[10px] text-slate-500 font-bold mb-1 tracking-wider">TOTAL AREA</p>
+                  <p className="text-xl font-bold text-[#002d5a]">1,240 <span className="text-[12px]">m²</span></p>
+                </div>
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
+                  <p className="text-[10px] text-slate-500 font-bold mb-1 tracking-wider">EFFICIENCY</p>
+                  <p className="text-xl font-bold text-[#002d5a]">94.2%</p>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-bold text-[#002d5a] mb-4">CAD Export</h3>
+              <div className="flex gap-2">
+                <button onClick={handleExportFile} className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm">AUTOCAD</button>
+                <button className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm">RHINO</button>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-bold text-[#002d5a] mb-2">3D Modeling</h3>
+              <p className="text-xs text-slate-500 mb-4">Create a Rhino-based 3D model from the generated floor plan.</p>
+              
+              <button 
+                onClick={() => setModelingStep('format_selection')}
+                disabled={modelingStep !== 'initial'}
+                className="w-full py-3 rounded text-xs font-bold tracking-wider mb-3 transition-colors bg-white border border-slate-300 text-[#002d5a] hover:bg-slate-50 shadow-sm disabled:bg-slate-50 disabled:border-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-inner"
+              >
+                Generate 3D Model
+              </button>
+
+              {modelingStep === 'format_selection' && (
+                <div className="flex gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
+                  <button onClick={() => handleGenerate3D('.3dm')} disabled={isGenerating} className="flex-1 bg-[#002d5a] text-white py-2 rounded text-[10px] font-bold hover:bg-[#001f3f] disabled:opacity-50 flex justify-center shadow-sm">
+                    {isGenerating ? <Loader2 className="animate-spin" size={14} /> : '.3DM'}
+                  </button>
+                  <button onClick={() => handleGenerate3D('.glb')} disabled={isGenerating} className="flex-1 bg-[#002d5a] text-white py-2 rounded text-[10px] font-bold hover:bg-[#001f3f] disabled:opacity-50 flex justify-center shadow-sm">
+                    {isGenerating ? <Loader2 className="animate-spin" size={14} /> : '.glb'}
+                  </button>
+                  <button onClick={() => handleGenerate3D('.dwg')} disabled={isGenerating} className="flex-1 bg-[#002d5a] text-white py-2 rounded text-[10px] font-bold hover:bg-[#001f3f] disabled:opacity-50 flex justify-center shadow-sm">
+                    {isGenerating ? <Loader2 className="animate-spin" size={14} /> : '.dwg'}
+                  </button>
+                </div>
+              )}
+
+              {modelingStep === 'generated' && generatedFile && (
+                <div className="flex flex-col gap-2 animate-in fade-in duration-200">
+                  <div 
+                    onClick={handleDownload3D}
+                    className="mt-2 border border-slate-200 bg-white shadow-sm rounded-lg p-4 flex items-center gap-4 cursor-pointer hover:border-[#002d5a] hover:bg-slate-50 transition-all"
+                  >
+                    <FileText className="text-slate-400 shrink-0" size={24} />
+                    <div className="overflow-hidden">
+                      <p className="text-[13px] font-bold text-[#002d5a] truncate">{generatedFile.name}</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 tracking-wider">CAD INTERCHANGE | {generatedFile.size}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
           </div>
         </div>
-
-        {/* Right Asset Sidebar */}
-        <aside className="w-[400px] bg-white border-l border-outline flex flex-col justify-between h-full">
-          <div className="p-6 overflow-y-auto space-y-8 flex-1">
-            
-            {generationStatus === 'completed' && generatedData && (
-            <div>
-              <h3 className="font-display text-sm text-secondary uppercase mb-4">Generated Assets</h3>
-              <div className="space-y-3">
-                <div className="flex items-center gap-4 p-4 border border-outline rounded-soft bg-white">
-                  <FileCode size={20} className="text-secondary"/> 
-                  <span className="text-sm font-medium">{generatedData.filename}.dxf</span>
-                </div>
-                <div className="flex items-center gap-4 p-4 border border-outline rounded-soft bg-white">
-                  <ImageIcon size={20} className="text-secondary"/> 
-                  <span className="text-sm font-medium">{generatedData.filename}.svg</span>
-                </div>
-              </div>
-            </div>
-            )}
-
-            <div className="bg-surface p-5 rounded-container border border-outline border-dashed">
-              <h3 className="font-mono text-xs text-secondary mb-4">GENERATION SPECS</h3>
-              <div className="grid grid-cols-2 gap-4">
-                <div><p className="font-mono text-[10px] text-secondary">TOTAL AREA</p><p className="font-display font-bold text-primary text-base">28.04 m²</p></div>
-                <div><p className="font-mono text-[10px] text-secondary">STRUCTURE</p><p className="text-sm font-semibold">Steel Frame</p></div>
-                <div className="col-span-2"><p className="font-mono text-[10px] text-secondary">WALL TYPE</p><p className="text-sm font-semibold">Insulated Wood Finish</p></div>
-              </div>
-            </div>
-
-            <button 
-              onClick={onNavigateBack}
-              className="w-full py-3 border border-outline rounded-soft font-display font-medium text-sm text-secondary flex items-center justify-center gap-2 hover:bg-surface transition-colors"
-            >
-              <RotateCcw size={16}/>
-              View Revision History
-            </button>
-          </div>
-
-          <div className="p-6 border-t border-outline bg-white">
-            <button
-              onClick={handleGenerate}
-              disabled={generationStatus === 'generating'}
-              className="w-full bg-primary text-white py-4 rounded-soft font-display font-semibold flex justify-center items-center gap-2 hover:bg-[#00355f] transition-colors disabled:opacity-70"
-            >
-              {generationStatus === 'idle' && <>Generate CAD-like Output</>}
-              {generationStatus === 'generating' && <><Loader2 size={18} className="animate-spin"/> Generating...</>}
-              {generationStatus === 'completed' && <><Download size={20}/> Download All CAD Assets</>}
-            </button>
-          </div>
-        </aside>
-      </div>
+      )}
     </div>
   );
 };

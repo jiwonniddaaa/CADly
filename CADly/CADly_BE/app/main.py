@@ -1,40 +1,32 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-# 분리된 두 개의 라우터를 모두 가져옵니다.
 from app.routers.chat import router as chat_router
 from app.routers.generate import router as generate_router
 
-app = FastAPI(
-    title="CADly AI Gateway Server"
-)
+app = FastAPI(title="CADly AI Gateway Server")
 
-# CORS 설정 (React 프론트엔드 연동을 위해 절대 유지)
+# CORS 미들웨어 설정 (프론트엔드 React 서버 허용)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발용
+    allow_origins=["*"],  # 실제 배포 시에는 React 서버 도메인만 기입
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 1. 텍스트 기반 채팅 라우터 등록
+# 라우터 등록 (프론트엔드 axios apiClient 설정에 맞춰 prefix 부여)
 app.include_router(
-    chat_router,
-    prefix="/chat",
-    tags=["Chatting"]
+    chat_router, 
+    prefix="/api/v1/chat", 
+    tags=["Chat"]
 )
 
-# 2. 파일 생성(Generate) 전용 신규 라우터 등록
 app.include_router(
-    generate_router,
-    prefix="/generate",
-    tags=["CAD Generation"]
+    generate_router, 
+    prefix="/api/v1/generate", 
+    tags=["Generation"]
 )
 
-# 기존 Root 상태 확인용 엔드포인트 유지
 @app.get("/")
 def root():
-    return {
-        "message": "Gateway server running"
-    }
+    return {"message": "CADly AI Gateway server is running smoothly."}
