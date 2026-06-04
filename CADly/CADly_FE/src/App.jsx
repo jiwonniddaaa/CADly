@@ -4,17 +4,35 @@ import UnifiedChatView from './views/UnifiedChatView';
 import CADGenerationView from './views/CADGenerationView';
 
 function App() {
-  // 'planning' (채팅 뷰)와 'generation' (CAD 뷰) 사이의 화면 상태
-  const [currentLayer, setCurrentLayer] = useState('planning');
+  const [currentView, setCurrentView] = useState('chat');
+  const [cadSvgContent, setCadSvgContent] = useState(null);
+  const [projectId, setProjectId] = useState('proj_123');
+
+  const handleNewProject = () => {
+    const newProjectId = `proj_${Date.now()}`;
+    setProjectId(newProjectId);
+    setCadSvgContent(null);
+    setCurrentView('chat');
+    console.log(`New Project Started: ${newProjectId}`);
+  };
 
   return (
-    <MainLayout>
-      {currentLayer === 'planning' ? (
-        // CAD 화면으로 가기 위한 함수 전달
-        <UnifiedChatView onNavigateToGeneration={() => setCurrentLayer('generation')} />
+    // 반드시 onNewProject={handleNewProject} 프롭을 넣어주어야 작동
+    <MainLayout onNewProject={handleNewProject}>
+      {currentView === 'chat' ? (
+        <UnifiedChatView 
+          currentView={currentView}
+          onNavigateToGeneration={() => setCurrentView('generation')}
+          setCadSvgContent={setCadSvgContent} 
+          projectId={projectId}
+        />
       ) : (
-        // 다시 채팅 화면으로 돌아오기 위한 함수 전달 (onNavigateBack)
-        <CADGenerationView onNavigateBack={() => setCurrentLayer('planning')} />
+        <CADGenerationView 
+          currentView={currentView}
+          onNavigateToChat={() => setCurrentView('chat')}
+          cadSvgContent={cadSvgContent} 
+          projectId={projectId}
+        />
       )}
     </MainLayout>
   );
