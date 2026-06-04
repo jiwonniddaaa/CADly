@@ -207,6 +207,10 @@ def image_query_processing_node(state: GraphState) -> Dict[str, Any]:
 
     사용자 추가 설명:
     {user_text or "(없음)"}
+    
+    검색어 규칙:
+    - 영어로만, 5~10개 단어 이내의 짧은 명사·형용사 위주
+    - 문장·쉼표 나열·과도하게 구체적인 묘사는 피할 것
 
     출력 형식 (반드시 아래 형식의 단일 문자열로만 응답):
     SEARCH: [영어 검색어]
@@ -273,7 +277,7 @@ def query_processing_node(state: GraphState):
     #    return {"search_query": query}
     #else:
     #    return {"search_query": "modern architecture interior"}
-    
+
     # 이 코드로 수정함.
     query = _parse_search_query(content, "modern architecture interior")
 
