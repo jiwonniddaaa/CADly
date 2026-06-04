@@ -70,6 +70,11 @@ class PlanningState(TypedDict, total=False):
     concept_updated_at: Optional[str]
     awaiting_concept_confirmation: bool
 
+    # 예린 - 이미지 기반 레퍼런스 검색
+    image_path: Optional[str]
+    image_base64: Optional[str]
+    image_media_type: Optional[str]
+
     references: Optional[List[Dict[str, Any]]]
     site_analysis: Optional[Dict[str, Any]]
 
@@ -288,6 +293,9 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         user_query,
         chat_history=chat_history,
         concept_state=concept_state,
+        image_path=state.get("image_path"),
+        image_base64=state.get("image_base64"),
+        image_media_type=state.get("image_media_type"),
     )
 
     update: PlanningState = {

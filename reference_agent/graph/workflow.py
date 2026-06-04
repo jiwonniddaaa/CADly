@@ -7,11 +7,19 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_anthropic import ChatAnthropic
 from reference_agent.core.config import settings
 from reference_agent.connectors.image_search import search_reference_images
+from reference_agent.utils.image_encode import resolve_image_source
+from reference_agent.utils.message_content import extract_user_text
 
 # 1. 상태(State) 정의
 class GraphState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
     intent: str
+
+    # 이미지 기반 레퍼런스 검색
+    image_path: str
+    image_base64: str
+    image_media_type: str
+    input_mode: str  # "text" | "image" | "image_text"
 
     # 채민 - reference search 전용 state
     search_query: str
@@ -53,10 +61,23 @@ low_llm = ChatAnthropic(
     default_headers={"anthropic-version": "2023-06-01"}
 )
 
+# 예린 - 현재 GraphState에 이미지 입력이 있는지 확인, 이미지 기반 레퍼런스 검색 흐름에 사용
+def _has_image_input(state: GraphState) -> bool:
+    return bool(state.get("image_path") or state.get("image_base64"))
+
+# 예린 - 검색어 추출
+def _parse_search_query(llm_content: str, fallback: str) -> str:
+    content = (llm_content or "").strip()
+    if content.startswith("SEARCH:"):
+        query = content.replace("SEARCH:", "", 1).strip()
+        return query or fallback
+    return content or fallback
+
+
 # 3. 라우팅 노드: 사용자의 의도를 파악하고 영어 검색어를 추출합니다.
 def route_node(state: GraphState):
     # 채민 - 검색어 추출은 query processing 노드로 옮기고, route_node는 단순히 의도 파악과 라우팅 역할만 하도록 변경
-    user_input = state["messages"][-1].content
+    user_input = extract_user_text(state["messages"][-1].content)
 
     prompt = f"""
     사용자의 요청을 분석해서 아래 둘 중 하나로만 분류하세요.
@@ -83,6 +104,8 @@ def route_node(state: GraphState):
 def entry_router(state: GraphState) -> str:
     if state.get("awaiting_concept_confirmation"):
         return "concept_node"
+    if _has_image_input(state):
+        return "image_query_processing_node"
     return "route_node"
 
 # 채민 - route node의 결과에 따라 다음 노드를 결정하는 조건부 라우터
@@ -117,11 +140,18 @@ def search_node(state: GraphState):
             "proceed_to_search": False,
         }
 
-    # 검색된 결과에 대한 간단한 에이전트 브리핑 생성
-    briefing_prompt = f"""
-    사용자가 찾고자 하는 컨셉({query})에 대해 이미지들을 찾았습니다.
-    이 이미지들이 사용자의 건축/인테리어 컨셉 구상에 어떤 영감을 줄 수 있는지 3~4문장으로 짧고 전문적으로 브리핑해주세요.
-    """
+    input_mode = state.get("input_mode", "text")
+    if input_mode in {"image", "image_text"}:
+        briefing_prompt = f"""
+        사용자가 업로드한 레퍼런스 이미지와 유사한 건축/인테리어 사례를 검색했습니다.
+        검색 키워드: {query}
+        찾은 이미지들이 원본 이미지의 분위기·재료·공간감과 어떻게 연결되는지 3~4문장으로 짧고 전문적으로 브리핑해주세요.
+        """
+    else:
+        briefing_prompt = f"""
+        사용자가 찾고자 하는 컨셉({query})에 대해 이미지들을 찾았습니다.
+        이 이미지들이 사용자의 건축/인테리어 컨셉 구상에 어떤 영감을 줄 수 있는지 3~4문장으로 짧고 전문적으로 브리핑해주세요.
+        """
     
     # 채민 - 브리핑은 고사양 모델로 처리
     response = high_llm.invoke([HumanMessage(content=briefing_prompt)])
@@ -146,12 +176,78 @@ def search_node(state: GraphState):
         "proceed_to_search": False,
     }
 
+# 예린 - 이미지 Vision llm 분석 후 검색어 추출
+def image_query_processing_node(state: GraphState) -> Dict[str, Any]:
+    user_text = extract_user_text(state["messages"][-1].content)
+
+    try:
+        image_data, media_type = resolve_image_source(
+            image_path=state.get("image_path"),
+            image_base64=state.get("image_base64"),
+            image_media_type=state.get("image_media_type"),
+        )
+    except (FileNotFoundError, ValueError) as e:
+        return {
+            "search_query": "",
+            "intent": "reference_search",
+            "messages": [
+                AIMessage(content=f"이미지를 처리하지 못했습니다: {e}")
+            ],
+        }
+
+    prompt = f"""
+    당신은 건축/인테리어 레퍼런스 이미지 검색 전문가입니다.
+    사용자가 업로드한 이미지를 분석해, 비슷한 레퍼런스를 찾기 위한 Google 이미지 검색용 영어 키워드를 추출하세요.
+
+    분석 시 포함할 요소:
+    - 공간 유형(주거, 상업, 오피스 등)
+    - 스타일·분위기
+    - 주요 재료·색감·조명
+    - 건축/인테리어 특징
+
+    사용자 추가 설명:
+    {user_text or "(없음)"}
+
+    출력 형식 (반드시 아래 형식의 단일 문자열로만 응답):
+    SEARCH: [영어 검색어]
+    """
+
+    response = low_llm.invoke(
+        [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                ]
+            )
+        ]
+    )
+
+    fallback = user_text or "modern architecture interior reference"
+    search_query = _parse_search_query(response.content, fallback)
+
+    input_mode = "image_text" if user_text else "image"
+
+    return {
+        "search_query": search_query,
+        "intent": "reference_search",
+        "input_mode": input_mode,
+    }
+
+
 # 채민 - 쿼리 관련 작업 노드
 def query_processing_node(state: GraphState):
     # 채민 - 기존 route_node의 기능을 이 노드로 옮겨서, route_node는 단순히 의도 파악과 라우팅 역할만 하도록 변경
     # 채민 - 예린 님 구현 방식에 따라 아래 내용은 자유롭게 수정하셔도 됩니다
     messages = state["messages"]
-    user_input = messages[-1].content
+    user_input = extract_user_text(messages[-1].content)
 
     prompt = f"""
     당신은 건축/인테리어 레퍼런스 이미지를 찾아주는 전문 에이전트입니다.
@@ -171,12 +267,20 @@ def query_processing_node(state: GraphState):
     response = low_llm.invoke([HumanMessage(content=prompt)])
 
     content = response.content.strip()
+
+    #if content.startswith("SEARCH:"):
+    #    query = content.replace("SEARCH:", "").strip()
+    #    return {"search_query": query}
+    #else:
+    #    return {"search_query": "modern architecture interior"}
     
-    if content.startswith("SEARCH:"):
-        query = content.replace("SEARCH:", "").strip()
-        return {"search_query": query}
-    else:
-        return {"search_query": "modern architecture interior"}
+    # 이 코드로 수정함.
+    query = _parse_search_query(content, "modern architecture interior")
+
+    return {
+        "search_query": query,
+        "input_mode": "text",
+    }
 
 def _format_spatial_reasoning(items: Any) -> str:
     if not isinstance(items, list):
@@ -425,12 +529,18 @@ def _handle_concept_confirmation(state: GraphState, user_input: str) -> Dict[str
     }
 
 def concept_node(state: GraphState):
-    user_input = state["messages"][-1].content
+    user_input = extract_user_text(state["messages"][-1].content)
 
     if state.get("awaiting_concept_confirmation"):
         return _handle_concept_confirmation(state, user_input)
 
     return _generate_concept_state(state, user_input)
+
+def image_search_router(state: GraphState) -> str:
+    if (state.get("search_query") or "").strip():
+        return "search_node"
+    return END
+
 
 def concept_node_router(state: GraphState) -> str:
     if state.get("proceed_to_search"):
@@ -443,12 +553,14 @@ workflow = StateGraph(GraphState)
 workflow.add_node("route_node", route_node)
 workflow.add_node("search_node", search_node)
 workflow.add_node("query_processing_node", query_processing_node)
+workflow.add_node("image_query_processing_node", image_query_processing_node)
 workflow.add_node("concept_node", concept_node)
 
 workflow.set_conditional_entry_point(
     entry_router,
     {
         "concept_node": "concept_node",
+        "image_query_processing_node": "image_query_processing_node",
         "route_node": "route_node",
     },
 )
@@ -461,6 +573,14 @@ workflow.add_conditional_edges(
     },
 )
 workflow.add_edge("query_processing_node", "search_node")
+workflow.add_conditional_edges(
+    "image_query_processing_node",
+    image_search_router,
+    {
+        "search_node": "search_node",
+        END: END,
+    },
+)
 workflow.add_edge("search_node", END)
 workflow.add_conditional_edges(
     "concept_node",
