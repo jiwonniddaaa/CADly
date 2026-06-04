@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, TypedDict, Annotated
 
 from langchain_core.messages import BaseMessage
-from langchain_core.messages import add_messages
+from langgraph.graph.message import add_messages
 
 
 class CADlyGenerationState(TypedDict, total=False):

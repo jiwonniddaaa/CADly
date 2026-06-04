@@ -1,14 +1,15 @@
+import json
+from datetime import datetime, timezone
 from typing import Annotated, TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.graph.message import add_messages
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_anthropic import ChatAnthropic
 from reference_agent.core.config import settings
 from reference_agent.connectors.image_search import search_reference_images
-from langgraph.graph.message import add_messages
-from langchain_core.messages import BaseMessage
 
 # 1. 상태(State) 정의
-class GraphState(TypedDict):
+class GraphState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
     intent: str
 
@@ -21,6 +22,20 @@ class GraphState(TypedDict):
     concept_keywords: List[str]
     design_intent: str
     narrative: str
+
+    # 예린 - 컨셉 구조화 전용 state 추가
+    concept_structured: Dict[str, Any] # 컨셉 구조화 결과
+    concept_updated_at: str # 컨셉 구조화 시간
+    awaiting_concept_confirmation: bool
+    proceed_to_search: bool
+
+_CONCEPT_CONFIRM_SUFFIX = (
+    "\n\n---\n"
+    "이 컨셉으로 레퍼런스 검색을 시작하시겠습니까?\n"
+    "- 검색을 원하시면: 네 / yes / 검색 시작\n"
+    "- 수정을 원하시면: 수정할 내용을 입력해 주세요"
+)
+
 
 # 2. LLM 초기화
 high_llm = ChatAnthropic(
@@ -65,6 +80,11 @@ def route_node(state: GraphState):
 
     return {"intent": intent}
 
+def entry_router(state: GraphState) -> str:
+    if state.get("awaiting_concept_confirmation"):
+        return "concept_node"
+    return "route_node"
+
 # 채민 - route node의 결과에 따라 다음 노드를 결정하는 조건부 라우터
 def conditional_router(state: GraphState):
     if state.get("intent") == "concept_develop":
@@ -73,14 +93,29 @@ def conditional_router(state: GraphState):
 
 # 4. 검색 노드: SerpApi 커넥터를 호출하여 이미지를 가져오고 브리핑을 생성합니다.
 def search_node(state: GraphState):
-    query = state.get("search_query", "")
-    
+    query = (state.get("search_query") or "").strip()
+    if not query:
+        error_msg = AIMessage(
+            content="검색어를 확인하지 못했습니다. 찾고 싶은 분위기나 스타일을 다시 알려주세요."
+        )
+        return {
+            "messages": [error_msg],
+            "search_results": [],
+            "awaiting_concept_confirmation": False,
+            "proceed_to_search": False,
+        }
+
     # SerpApi 연동 커넥터 호출
     results = search_reference_images(query=query, limit=5)
     
     if not results:
         error_msg = AIMessage(content="죄송합니다. 해당 컨셉의 레퍼런스 이미지를 찾는 데 실패했습니다. 다른 키워드로 검색해 보시겠어요?")
-        return {"messages": [error_msg], "search_results": []}
+        return {
+            "messages": [error_msg],
+            "search_results": [],
+            "awaiting_concept_confirmation": False,
+            "proceed_to_search": False,
+        }
 
     # 검색된 결과에 대한 간단한 에이전트 브리핑 생성
     briefing_prompt = f"""
@@ -90,12 +125,25 @@ def search_node(state: GraphState):
     
     # 채민 - 브리핑은 고사양 모델로 처리
     response = high_llm.invoke([HumanMessage(content=briefing_prompt)])
-    ai_message = AIMessage(content=response.content)
+    briefing = response.content.strip()
+
+    if state.get("proceed_to_search") and state.get("concept_result"):
+        combined_content = (
+            f"{state['concept_result']}\n\n"
+            f"---\n"
+            f"레퍼런스 검색 결과\n\n"
+            f"{briefing}"
+        )
+        ai_message = AIMessage(content=combined_content)
+    else:
+        ai_message = AIMessage(content=briefing)
     
     # 최종 결과 반환 (이 결과가 프론트엔드로 전달됩니다)
     return {
         "messages": [ai_message],
-        "search_results": results
+        "search_results": results,
+        "awaiting_concept_confirmation": False,
+        "proceed_to_search": False,
     }
 
 # 채민 - 쿼리 관련 작업 노드
@@ -121,6 +169,7 @@ def query_processing_node(state: GraphState):
     
     # 채민 - 쿼리 추출은 저사양 모델로 처리
     response = low_llm.invoke([HumanMessage(content=prompt)])
+
     content = response.content.strip()
     
     if content.startswith("SEARCH:"):
@@ -128,59 +177,299 @@ def query_processing_node(state: GraphState):
         return {"search_query": query}
     else:
         return {"search_query": "modern architecture interior"}
-    return state
 
-# 채민 - concept/narrtive 강화 노드
-def concept_node(state: GraphState):
-    # 채민 - 아래 내용은 예시로 써둔 것이므로, 자유롭게 수정하셔도 됩나다
-    user_input = state["messages"][-1].content
+def _format_spatial_reasoning(items: Any) -> str:
+    if not isinstance(items, list):
+        return ""
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        space = str(item.get("space", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        if space and reason:
+            lines.append(f"- {space}: {reason}")
+        elif space:
+            lines.append(f"- {space}")
+    if not lines:
+        return ""
+    return "공간별 존재 이유:\n" + "\n".join(lines)
 
+def _format_user_journey(items: Any) -> str:
+    if not isinstance(items, list):
+        return ""
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        step = item.get("step", len(lines) + 1)
+        scene = str(item.get("scene", "")).strip()
+        experience = str(item.get("experience", "")).strip()
+        design_response = str(item.get("design_response", "")).strip()
+        if not scene and not experience and not design_response:
+            continue
+        lines.append(f"{step}. {scene}")
+        if experience:
+            lines.append(f"   경험: {experience}")
+        if design_response:
+            lines.append(f"   설계 대응: {design_response}")
+    if not lines:
+        return ""
+    return "사용자 경험 흐름:\n" + "\n".join(lines)
+
+def _format_uncertainties(items: Any) -> str:
+    if not isinstance(items, list):
+        return ""
+    lines = [str(item).strip() for item in items if str(item).strip()]
+    if not lines:
+        return ""
+    return "확인이 필요한 사항:\n- " + "\n- ".join(lines)
+
+def narrative_tool(user_input: str, previous_concept_state: Dict[str, Any]) -> str:
     prompt = f"""
     당신은 건축 컨셉 디렉터입니다.
-    사용자의 아이디어를 바탕으로 건축적 의도, 공간 내러티브, 감각적 키워드, 설계 방향을 강화하세요.
 
-    사용자 입력:
+    [역할]
+    - 사용자 입력을 바탕으로 건축적 의도, 공간의 존재 이유(reason), 사용자 경험 흐름(journey)을 구조화합니다.
+
+    [입력]
+    1) 사용자 원문:
     {user_input}
 
-    출력:
-    - 핵심 컨셉
-    - 건축 의도
-    - 공간 내러티브
-    - 디자인 키워드
+    2) 이전 컨셉 state(있다면 참고):
+    {previous_concept_state}
+
+    [출력 규칙]
+    - 반드시 JSON 객체 하나만 출력하세요. 설명 문장, 코드블록, 마크다운 금지.
+    - 추측/과장/근거 없는 수치(면적, 비용, 성능 등)를 만들지 마세요.
+    - 입력에 없는 사실은 생성하지 말고, 필요한 경우 uncertainties에 명시하세요.
+
+    [품질 기준]
+    - spatial_reasoning에는 각 공간의 존재 이유(reason)가 반드시 포함되어야 합니다.
+    - user_journey에는 사용자의 경험 흐름(journey)이 단계적으로 반드시 포함되어야 합니다.
+
+    [JSON 스키마]
+    {{
+    "concept_title": "string",
+    "concept_keywords": ["string", "string"],
+    "design_intent": "2~4문장",
+    "spatial_reasoning": [
+        {{
+        "space": "string",
+        "reason": "string"
+        }}
+    ],
+    "user_journey": [
+        {{
+        "step": 1,
+        "scene": "string",
+        "experience": "string",
+        "design_response": "string"
+        }}
+    ],
+    "narrative": "4~7문장",
+    "uncertainties": ["string"]
+    }}
+
+    [추가 제약]
+    - concept_keywords는 4~8개로 작성하세요.
+    - user_journey는 최소 3단계 이상 작성하세요.
+    - spatial_reasoning은 최소 3개 항목 작성하세요.
     """
-    # 채민 - 컨셉 강화 작업은 고사양 모델로 처리
+
     response = high_llm.invoke([HumanMessage(content=prompt)])
-    
+    return response.content.strip()
+
+def parse_concept_response(raw_content: str) -> Dict[str, Any]:
+    try:
+        start = raw_content.find("{")
+        end = raw_content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            structured = json.loads(raw_content[start:end + 1])
+        else:
+            structured = {}
+    except Exception:
+        structured = {}
+
+    concept_keywords = structured.get("concept_keywords", [])
+    if not isinstance(concept_keywords, list):
+        concept_keywords = []
+    concept_keywords = [str(k).strip() for k in concept_keywords if str(k).strip()]
+
+    design_intent = str(structured.get("design_intent", "")).strip()
+    narrative = str(structured.get("narrative", "")).strip()
+    concept_title = str(structured.get("concept_title", "컨셉 제안")).strip() or "컨셉 제안"
+
+    if not design_intent:
+        design_intent = "사용자 요청을 바탕으로 공간의 목적과 관계를 중심으로 설계 의도를 정리했습니다."
+    if not narrative:
+        narrative = "진입-체류-전환 흐름을 기준으로 사용자 경험을 단계적으로 구성했습니다."
+
+    return {
+        "structured": structured,
+        "raw_content": raw_content,
+        "concept_keywords": concept_keywords,
+        "design_intent": design_intent,
+        "narrative": narrative,
+        "concept_title": concept_title,
+        "concept_structured": structured if structured else {"raw_response": raw_content},
+    }
+
+def build_concept_message(structured: Dict[str, Any]) -> str:
+    concept_title = structured["concept_title"]
+    design_intent = structured["design_intent"]
+    narrative = structured["narrative"]
+    concept_keywords = structured["concept_keywords"]
+    parsed_structured = structured["structured"]
+
+    user_message = (
+        f"[{concept_title}]\n\n"
+        f"설계 의도:\n{design_intent}\n\n"
+        f"공간 내러티브:\n{narrative}"
+    )
+    if concept_keywords:
+        user_message += "\n\n디자인 키워드:\n- " + "\n- ".join(concept_keywords)
+
+    spatial_section = _format_spatial_reasoning(parsed_structured.get("spatial_reasoning", []))
+    if spatial_section:
+        user_message += f"\n\n{spatial_section}"
+
+    journey_section = _format_user_journey(parsed_structured.get("user_journey", []))
+    if journey_section:
+        user_message += f"\n\n{journey_section}"
+
+    uncertainties_section = _format_uncertainties(parsed_structured.get("uncertainties", []))
+    if uncertainties_section:
+        user_message += f"\n\n{uncertainties_section}"
+
+    return user_message
+
+def _generate_concept_state(state: GraphState, user_input: str) -> Dict[str, Any]:
+    previous_concept_state = {
+        "concept_result": state.get("concept_result", ""),
+        "concept_keywords": state.get("concept_keywords", []),
+        "design_intent": state.get("design_intent", ""),
+        "narrative": state.get("narrative", ""),
+        "concept_structured": state.get("concept_structured", {}),
+    }
+
+    raw_content = narrative_tool(user_input, previous_concept_state)
+    parsed = parse_concept_response(raw_content)
+    user_message = build_concept_message(parsed)
+
+    return {
+        "messages": [AIMessage(content=user_message + _CONCEPT_CONFIRM_SUFFIX)],
+        "concept_result": user_message,
+        "concept_keywords": parsed["concept_keywords"],
+        "design_intent": parsed["design_intent"],
+        "narrative": parsed["narrative"],
+        "concept_structured": parsed["concept_structured"],
+        "concept_updated_at": datetime.now(timezone.utc).isoformat(),
+        "search_results": [],
+        "awaiting_concept_confirmation": True,
+        "proceed_to_search": False,
+    }
+
+def _handle_concept_confirmation(state: GraphState, user_input: str) -> Dict[str, Any]:
+    text = user_input.strip().lower()
+    confirm = (
+        text in {"네", "yes", "y", "예", "ok", "okay", "ㅇ", "ㅇㅇ", "맞아", "좋아", "검색 시작", "시작"}
+        or text.startswith("네 ")
+        or "검색 시작" in text
+        or "시작해" in text
+        or "진행" in text
+    )
+
+    if confirm:
+        keywords = state.get("concept_keywords") or []
+        search_query = " ".join(str(k).strip() for k in keywords if str(k).strip())
+        if not search_query:
+            search_query = (state.get("design_intent") or "").strip()[:120]
+
+        return {
+            "search_query": search_query,
+            "awaiting_concept_confirmation": False,
+            "proceed_to_search": True,
+        }
+
+    if text in {"no", "n", "아니요", "아니"} or (
+        any(keyword in text for keyword in ("아니", "no", "수정", "변경")) and len(text) < 20
+    ):
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "레퍼런스 검색을 시작하려면 '네' 또는 '검색 시작'이라고 답해 주세요. "
+                        "컨셉을 수정하려면 수정할 내용을 입력해 주세요."
+                    )
+                )
+            ],
+            "awaiting_concept_confirmation": True,
+            "proceed_to_search": False,
+        }
+
+    if len(text) >= 2:
+        return _generate_concept_state(state, user_input)
+
     return {
         "messages": [
-            AIMessage(content=response.content)
+            AIMessage(
+                content=(
+                    "레퍼런스 검색을 시작하려면 '네' 또는 '검색 시작'이라고 답해 주세요. "
+                    "컨셉을 수정하려면 수정할 내용을 입력해 주세요."
+                )
+            )
         ],
-        "concept_result": response.content,
+        "awaiting_concept_confirmation": True,
+        "proceed_to_search": False,
     }
+
+def concept_node(state: GraphState):
+    user_input = state["messages"][-1].content
+
+    if state.get("awaiting_concept_confirmation"):
+        return _handle_concept_confirmation(state, user_input)
+
+    return _generate_concept_state(state, user_input)
+
+def concept_node_router(state: GraphState) -> str:
+    if state.get("proceed_to_search"):
+        return "search_node"
+    return END
 
 # 5. 그래프(Workflow) 구성
 workflow = StateGraph(GraphState)
 
 workflow.add_node("route_node", route_node)
 workflow.add_node("search_node", search_node)
-# 채민 - 노드 추가
 workflow.add_node("query_processing_node", query_processing_node)
 workflow.add_node("concept_node", concept_node)
 
-# 흐름: 시작 -> 검색어 추출 -> SerpApi 이미지 검색 및 응답 생성 -> 종료
-# 채민 - 노드 간 흐름 추가
-workflow.set_entry_point("route_node")
+workflow.set_conditional_entry_point(
+    entry_router,
+    {
+        "concept_node": "concept_node",
+        "route_node": "route_node",
+    },
+)
 workflow.add_conditional_edges(
     "route_node",
     conditional_router,
     {
         "query_processing_node": "query_processing_node",
-        "concept_node": "concept_node"
-    }
+        "concept_node": "concept_node",
+    },
 )
 workflow.add_edge("query_processing_node", "search_node")
 workflow.add_edge("search_node", END)
-workflow.add_edge("concept_node", END)
+workflow.add_conditional_edges(
+    "concept_node",
+    concept_node_router,
+    {
+        "search_node": "search_node",
+        END: END,
+    },
+)
 
 app = workflow.compile()
 
