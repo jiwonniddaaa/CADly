@@ -3,7 +3,7 @@ from __future__ import annotations
 from design.state import CADlyGenerationState
 
 
-def final_repair_node(state: CADlyGenerationState) -> CADlyGenerationState:
+def final_node(state: CADlyGenerationState) -> CADlyGenerationState:
     repair_action = state.get("repair_action")
 
     if repair_action == "ACCEPT":

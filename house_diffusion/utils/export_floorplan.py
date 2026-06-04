@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import drawSvg as drawsvg
+import drawsvg
 
 
 DEFAULT_ID_COLOR = {
@@ -130,7 +130,7 @@ def save_svg(polys, out_path: str | Path, resolution: int = 256, colors=None):
         cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
         drawing.append(drawsvg.Text(poly.get("label", ""), 8, cx, cy, center=True, fill="black"))
 
-    drawing.saveSvg(str(out_path))
+    drawing.save_svg(str(out_path))
 
 
 def save_room_labels_json(polys, out_path: str | Path):
