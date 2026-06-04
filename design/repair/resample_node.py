@@ -10,8 +10,14 @@ def resample_node(state: CADlyGenerationState) -> CADlyGenerationState:
     previous_seed = int(state.get("seed", 42))
     next_seed = previous_seed + resample_count
 
+    base_name = state.get("name", "floorplan")
+    resample_name = f"{base_name}_resample_{resample_count:02d}"
+
     sampling_state = {
         **state,
+        "base_name": base_name,
+        "name": resample_name,
+
         "seed": next_seed,
         "resample_count": resample_count,
         "status": "ready_for_sampling",

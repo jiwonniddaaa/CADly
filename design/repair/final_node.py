@@ -4,29 +4,47 @@ from design.state import CADlyGenerationState
 
 
 def final_node(state: CADlyGenerationState) -> CADlyGenerationState:
-    repair_action = state.get("repair_action")
+    status = state.get("status")
 
-    if repair_action == "ACCEPT":
+    if status in {
+        "repair_success",
+        "repair_success_with_warnings",
+    }:
         return {
             **state,
-            "status": "repair_success",
-            "repair_status": "repair_success",
-            "message": "Floorplan passed verification and is ready for final output.",
+            "status": status,
+            "repair_route": "end",
+            "message": state.get(
+                "message",
+                "Floorplan verification passed.",
+            ),
         }
 
-    if state.get("repair_status") == "repair_success":
+    if status in {
+        "repair_failed",
+        "verification_failed",
+        "postprocess_failed",
+        "resample_failed",
+        "resampling_failed",
+        "sampling_failed",
+        "error",
+    }:
         return {
             **state,
-            "status": "repair_success",
-            "message": "Floorplan repaired and verified successfully.",
+            "status": "repair_failed",
+            "repair_route": "end",
+            "message": state.get(
+                "message",
+                "Floorplan repair failed.",
+            ),
         }
 
     return {
         **state,
         "status": "repair_failed",
-        "repair_status": "repair_failed",
+        "repair_route": "end",
         "message": state.get(
             "message",
-            "Floorplan repair failed after verification and retry attempts.",
+            f"Repair agent ended with unexpected status: {status}",
         ),
     }
