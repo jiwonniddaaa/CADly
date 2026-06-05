@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import asyncio
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -77,6 +76,7 @@ async def main():
         "active_orchestrator": "planning",
         "planning_state": {},
         "design_state": {},
+        "image_path": None,
     }
 
     print("CADly 챗봇을 시작합니다.")
@@ -91,10 +91,19 @@ async def main():
 
         if not user_input:
             continue
+        
+        # 입력 문자열 내에서 이미지 파일 경로 패턴 추출하기
+        extracted_image_path = None
+        words = user_input.split()
+        for word in words:
+            if word.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                extracted_image_path = word
+                break
 
         conversation_state["messages"].append(
                 HumanMessage(content=user_input)
         )
+        conversation_state["image_path"] = extracted_image_path
         
         active_orchestrator = conversation_state.get("active_orchestrator")
 
@@ -104,6 +113,7 @@ async def main():
                     **conversation_state.get("design_state", {}),
                     "messages": conversation_state["messages"],
                     "user_input": user_input,
+                    "image_path": conversation_state["image_path"],
                 }
             )
 
@@ -115,6 +125,7 @@ async def main():
                     **conversation_state.get("planning_state", {}),
                     "messages": conversation_state["messages"],
                     "user_input": user_input,
+                    "image_path": conversation_state["image_path"],
                 }
             )
 
@@ -128,6 +139,16 @@ async def main():
         if result_messages:
             conversation_state["messages"].extend(result_messages)
 
+        if result.get("image_path") is None:
+            conversation_state["image_path"] = None
+            
+            
+        print("\n" + "="*40)
+        print(f"[Debug] 최종 활성화된 라우트: {result.get('route')}")
+        print(f"[Debug] 이미지 분류 결과: {result.get('image_type')}")
+        print(f"[Debug] 현재 주입된 이미지 경로: {result.get('image_path')}")
+        print("="*40 + "\n")
+        
         print_response(result)
 
 if __name__ == "__main__":

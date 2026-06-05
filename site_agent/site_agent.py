@@ -1,6 +1,8 @@
 # site_agent/site_agent.py
 import json
 from openai import AsyncOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_anthropic import ChatAnthropic
 # 현재 내 패키지 폴더 안의 config 모듈에서 가져오도록 명시
 from site_agent.config import LLMConfig 
 
@@ -9,7 +11,11 @@ class SiteAgent:
         self.analyzer = analyzer
         config = LLMConfig()
         config.validate()
-        self.client = AsyncOpenAI(api_key=config.api_key)
+        self.llm = ChatAnthropic(
+            model=config.model,
+            api_key=config.api_key,
+            temperature=0.0  # 파싱 및 정형 데이터 추출의 정확도를 위해 0으로 설정
+        )
         self.model = config.model
 
     async def get_search_params(self, user_input: str):
@@ -23,15 +29,12 @@ class SiteAgent:
         - bun: 지번의 본번 4자리 (예: 59-45의 경우 '0059'), 없으면 null
         - ji: 지번의 부번 4자리 (예: 59-45의 경우 '0045'), 없으면 null
         """
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
-            ],
-            response_format={ "type": "json_object" }
-        )
-        return response.choices[0].message.content
+        response = await self.llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_input)
+        ])
+        
+        return response.content
     
     # 채민 - response 생성 로직 추가 (프롬프트 수정 필요)
     async def make_message (
@@ -67,21 +70,25 @@ class SiteAgent:
         💡 전문가 한줄 평: [여기에 해당 부지가 사용자 요청에 왜 적합한지 데이터 기반으로 1~2문장 요약평 작성]
         """
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "너는 건축 부지 추천 AI다."},
-                {"role": "user", "content": prompt}
-            ]
-        )
+        response = await self.llm.ainvoke([
+            SystemMessage(content="너는 건축 부지 추천 AI다. 존댓말로 자연스럽게 한국어로 응답해줘."),
+            HumanMessage(content=prompt)
+        ])
 
-        return response.choices[0].message.content
+        return response.content
 
     
     async def run(self, user_input: str) -> dict:
         """[오케스트레이터 인터페이스] 요구된 4대 면적 데이터만 엄격하게 한정하여 리턴"""
         params_raw = await self.get_search_params(user_input)
-        p = json.loads(params_raw)
+        text = params_raw.strip()
+        if text.startswith("```"):
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1:
+                text = text[start:end + 1]
+                
+        p = json.loads(text)
         
         if p.get('intent') == "search":
             # [Case B] 자연어 조건 검색 파이프라인 가동
