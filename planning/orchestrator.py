@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
-from typing import TypedDict, Optional, Literal, Annotated, List, Dict, Any
+from typing import TypedDict, Optional, Literal, Annotated, List, Dict, Any, Tuple
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -81,6 +81,9 @@ class PlanningState(TypedDict, total=False):
 
     references: Optional[List[Dict[str, Any]]]
     site_analysis: Optional[Dict[str, Any]]
+    
+    image_base64: Optional[str]
+    image_media_type: Optional[str]
 
     # design requirements
     spaces: List[SpaceRequirement]
