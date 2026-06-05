@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import ValidationError
 from app.core.config import DEBUG
 from app.schemas.chat import ChatResponse
-from app.services.agent_service import send_to_agent
+from app.services.agent_service import clear_session_state, send_to_agent
+from app.utils.response_normalize import build_debug_payload, normalize_agent_metadata
 
 router = APIRouter()
 
@@ -48,19 +49,20 @@ async def chat(
             for url in urls:
                 raw_text = raw_text.replace(url, "").replace("imageUrl:", "").strip()
                 
-        # 4. 도면 데이터 포함 여부 확인
+        # 4. 도면 데이터 및 라우팅 메타 정규화
         cad_svg_content = agent_response.get("cad_svg_content")
-        agent_type = agent_response.get("agent_type") or (
-            "reference_agent" if references else "agent"
+        svg_path = agent_response.get("svg_path")
+        dxf_path = agent_response.get("dxf_path")
+        design_status = agent_response.get("status")
+        route, agent_type, route_label, active_orchestrator = normalize_agent_metadata(
+            agent_response,
+            references,
         )
-        debug = None
-        if DEBUG:
-            debug = {
-                "intent": agent_response.get("intent", ""),
-                "search_query": agent_response.get("search_query", ""),
-                "input_mode": agent_response.get("input_mode", ""),
-                "proceed_to_search": agent_response.get("proceed_to_search", False),
-            }
+        debug = build_debug_payload(agent_response) if DEBUG else None
+        if debug is not None:
+            debug["svg_path"] = svg_path
+            debug["dxf_path"] = dxf_path
+            debug["design_status"] = design_status
 
         return ChatResponse(
             message=raw_text,
@@ -68,7 +70,13 @@ async def chat(
             image_urls=image_urls,
             references=references,
             cad_svg_content=cad_svg_content,
+            svg_path=svg_path,
+            dxf_path=dxf_path,
+            design_status=design_status,
+            route=route,
             agent_type=agent_type,
+            route_label=route_label,
+            active_orchestrator=active_orchestrator,
             debug=debug,
         )
 
@@ -89,3 +97,10 @@ async def chat(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/session/{session_id}")
+async def reset_chat_session(session_id: str):
+    """New Project 시 FE가 호출해 BE 인메모리 planning_state를 초기화합니다."""
+    clear_session_state(session_id)
+    return {"ok": True, "session_id": session_id}

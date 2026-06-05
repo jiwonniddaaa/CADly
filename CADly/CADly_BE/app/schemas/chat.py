@@ -15,7 +15,13 @@ class ChatResponse(BaseModel):
     image_urls: List[str] = Field(default_factory=list)
     references: List[Dict[str, Any]] = Field(default_factory=list)
     cad_svg_content: Optional[str] = None
+    svg_path: Optional[str] = None
+    dxf_path: Optional[str] = None
+    design_status: Optional[str] = None
+    route: str = ""
     agent_type: str = "agent"
+    route_label: str = "에이전트"
+    active_orchestrator: str = "planning"
     debug: Optional[Dict[str, Any]] = None
     
 # 프론트엔드 -> 백엔드 (3D 파일 생성 요청)
