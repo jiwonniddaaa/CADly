@@ -64,10 +64,10 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
       {/* ================= 메인 캔버스 워크스페이스 영역 ================= */}
       <div className="flex-1 flex flex-col relative h-full transition-all duration-300">
         
-        {/* 상단 헤더: 하얀색 고정 배경, 하단 연한 구분선 */}
-        <header className="w-full h-16 flex items-center justify-between px-10 bg-white border-b border-slate-100 z-10 shrink-0">
+        {/* ✨ 상단 헤더: UnifiedChatView와 동일한 높이와 패딩(px-8 py-4) 적용 */}
+        <header className="flex items-center justify-between px-8 py-4 border-b border-gray-100 bg-white shrink-0 z-10 w-full">
           
-          {/* 좌측 CHAT 이동 버튼: text-xs, font-mono, 딥네이비 색상 및 크기 동기화 */}
+          {/* 좌측 CHAT 이동 버튼 */}
           <button 
             onClick={onNavigateToChat}
             className="flex items-center gap-1.5 font-mono text-xs font-bold text-[#002d5a] hover:opacity-70 transition-opacity bg-transparent outline-none"
@@ -76,7 +76,7 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
             CHAT
           </button>
           
-          {/* 우측 햄버거 메뉴 버튼: 화이트 헤더에 걸맞게 딥네이비 커스텀 및 크기 밸런싱 */}
+          {/* 우측 햄버거 메뉴 버튼 */}
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
             className="text-[#002d5a] hover:opacity-70 transition-opacity bg-transparent outline-none"
@@ -98,7 +98,7 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
           <div className="absolute inset-0 bg-[linear-gradient(to_right,#1e293b_1px,transparent_1px),linear-gradient(to_bottom,#1e293b_1px,transparent_1px)] bg-[size:4rem_4rem] opacity-20"></div>
           
           {cadSvgContent ? (
-            <div dangerouslySetInnerHTML={{ __html: cadSvgContent }} className="relative z-10 w-full h-full" />
+            <div dangerouslySetInnerHTML={{ __html: cadSvgContent }} className="relative z-10 w-full h-full p-8 flex items-center justify-center" />
           ) : (
              <div className="relative z-10 w-[600px] h-[400px] border border-dashed border-[#4a5568] flex items-center justify-center text-[#a0aec0]">
                [도면 미리보기 영역]
@@ -123,9 +123,10 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
 
       {/* ================= 우측 하얀색 제어 사이드바 영역 ================= */}
       {isSidebarOpen && (
-        <div className="w-[380px] bg-white text-slate-800 h-full border-l border-slate-200 overflow-y-auto shadow-2xl z-30 shrink-0 animate-in fade-in slide-in-from-right duration-200">
-          <div className="p-8 flex flex-col gap-10">
-            
+        <div className="w-[380px] bg-white text-slate-800 h-full border-l border-slate-200 overflow-y-auto shadow-2xl z-30 shrink-0 animate-in fade-in slide-in-from-right duration-200 relative">
+          <button onClick={() => setIsSidebarOpen(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xs">✕</button>
+
+          <div className="p-8 flex flex-col gap-10 mt-4">
             <section>
               <h3 className="text-lg font-bold text-[#002d5a] mb-4">Files</h3>
               <div className="border border-slate-200 bg-slate-50 rounded-lg p-4 flex items-center gap-4">
