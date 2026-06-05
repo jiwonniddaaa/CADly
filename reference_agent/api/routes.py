@@ -3,16 +3,25 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
-from reference_agent.agents.reference_agent import ReferenceAgent
+from reference_agent.api.chat_service import run_cadly_chat
 
 router = APIRouter()
-agent = ReferenceAgent()
 
 
 class ChatRequest(BaseModel):
     query: str = Field(default="", description="텍스트 요청 (이미지와 함께 사용 가능)")
-    chat_history: Optional[List] = None
-    concept_state: Optional[Dict[str, Any]] = None
+    planning_state: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Planning 오케스트레이터 세션 상태 (messages 포함)",
+    )
+    concept_state: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="하위 호환용 레거시 컨셉 상태 (planning_state 없을 때만 사용)",
+    )
+    chat_history: Optional[List] = Field(
+        default=None,
+        description="미사용 (planning_state.messages 사용)",
+    )
     image_path: Optional[str] = Field(
         default=None,
         description="서버에 저장된 이미지 파일 경로",
@@ -28,14 +37,11 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat")
-def reference_agent_query(req: ChatRequest):
-    """
-    텍스트·이미지 입력으로 레퍼런스 에이전트를 실행합니다.
-    이미지만내면 Vision으로 스타일을 분석해 유사 레퍼런스를 검색합니다.
-    """
-    return agent.chat(
-        user_input=req.query,
-        chat_history=req.chat_history,
+async def cadly_chat(req: ChatRequest):
+    """CADly 통합 채팅 (active_orchestrator → Planning 또는 Design)."""
+    return await run_cadly_chat(
+        query=req.query,
+        planning_state=req.planning_state,
         concept_state=req.concept_state,
         image_path=req.image_path,
         image_base64=req.image_base64,
