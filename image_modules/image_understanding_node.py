@@ -122,7 +122,7 @@ def image_understanding_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if image_type == "hand_sketch":
         route = "sketch_agent_node"
     elif image_type == "reference_image":
-        route = "reference_agent_node"
+        route = "reference_agent"
     else:
         route = "unsupported_image"
 
