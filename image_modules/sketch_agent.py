@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 low_llm = ChatAnthropic(
     model="claude-haiku-4-5-20251001"
@@ -132,8 +132,8 @@ class SketchAgent:
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "media_type",
-                                "data": "image_data",
+                                "media_type": media_type,
+                                "data": image_data,
                             },
                         },
                     ]
@@ -244,6 +244,9 @@ CADly schema:
                 "status": "sketch_extracted",
                 "sketch_result": cadly_schema,
                 "final_answer": message,
+                "messages": [
+                AIMessage(content=message)
+            ],
             }
 
         except Exception as e:
@@ -278,13 +281,10 @@ CADly schema:
     손도면 분석 결과:
     {json.dumps(sketch_analysis, ensure_ascii=False, indent=2)}
 
-    CADly schema:
-    {json.dumps(cadly_schema, ensure_ascii=False, indent=2)}
-
     사용자에게 보여줄 응답만 작성해라.
     """
 
-        response = self.client.invoke([
+        response = low_llm.invoke([
             HumanMessage(content=prompt)
         ])
 

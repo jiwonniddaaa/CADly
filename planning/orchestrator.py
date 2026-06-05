@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from typing import TypedDict, Optional, Literal, Annotated, List, Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -15,6 +16,11 @@ from planning.planning_agent import PlanningAgent
 from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
 
+from image_modules import sketch_agent
+from image_modules.image_understanding_node import image_understanding_node
+
+sketch_agent_instance = sketch_agent.SketchAgent()
+
 # 기본 초기화
 high_llm = ChatAnthropic(
     model="claude-sonnet-4-5-20250929", 
@@ -28,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 dataset_path = PROJECT_ROOT / "data" / "mart_djy_03_clean.csv"
 db_path = PROJECT_ROOT / "data" / "mart_building_data.db"
 
-reference_agent = ReferenceAgent()
+reference_agent_node = ReferenceAgent()
 
 config = PublicDataConfig()
 public_client = PublicDataClient(config)
@@ -52,6 +58,9 @@ class PlanningState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
 
     route: Literal[
+        "image_understanding", 
+        "sketch_analysis_node",      
+        "sketch_extract_node",   
         "reference_agent",
         "site_agent",
         "extract_requirements",
@@ -97,6 +106,13 @@ class PlanningState(TypedDict, total=False):
     next_step: Optional[str]
     awaiting_manual_area_input: bool
 
+    # [추가] 이미지 처리용 컨텍스트 정보
+    image_path: Optional[str]
+    user_input: Optional[str]
+    image_type: Optional[str]
+    image_classification: Optional[Dict[str, Any]]
+    sketch_analysis: Optional[Dict[str, Any]]
+    sketch_result: Optional[Dict[str, Any]]
 
 # 유틸리티 함수
 def messages_to_text(messages: List[BaseMessage]) -> str:
@@ -116,6 +132,24 @@ def safe_json_loads(text: str) -> dict:
         if start != -1 and end != -1:
             return json.loads(text[start:end + 1])
         raise ValueError(f"JSON parsing failed: {text}")
+
+def _encode_image(image_path: str) -> Tuple[str, str]:
+    path = Path(image_path)
+    if not path.exists():
+        raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
+
+    mime_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+    media_type = mime_map.get(path.suffix.lower())
+    if media_type is None:
+        raise ValueError(f"지원하지 않는 이미지 형식입니다: {path.suffix}")
+
+    image_data = base64.b64encode(path.read_bytes()).decode("utf-8")
+    return image_data, media_type
 
 def room_type_to_label(room_type: str) -> int:
     mapping = {
@@ -165,7 +199,27 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
 
 # 노드 정의
 def router_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    if state.get("image_path"):
+        return {
+            "route": "image_understanding"
+        }
+
+    user_query = state["messages"][-1].content if state["messages"] else ""
+    
+    extracted_image_path = None
+    words = user_query.split()
+    for word in words:
+        if word.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            extracted_image_path = word
+            break
+
+    # 2. 이미지 경로가 발견되면, state를 업데이트하고 즉시 이미지 이해 노드로 강제 라우팅
+    if extracted_image_path:
+        # 다음 노드들이 사용할 수 있도록 image_path를 상태에 저장하고 라우팅 지시
+        return {
+            "route": "image_understanding",
+            "image_path": extracted_image_path
+        }
 
     # "직접 입력"을 선택한 직후 턴은 무조건 요구사항 추출 노드로 보냅니다.
     if state.get("awaiting_manual_area_input"):
@@ -255,6 +309,7 @@ current_building_type = {state.get("building_type")}
     route = parsed.get("route", "general_answer")
     # 예린 - 라우터가 허용된 값만 반환하도록 화이트리스트로 방어
     allowed_routes = {
+        "image_understanding",
         "reference_agent",
         "site_agent",
         "extract_requirements",
@@ -591,6 +646,9 @@ Guidelines:
 def route_after_router(state: PlanningState) -> str:
     return state.get("route", "general_answer")
 
+def route_after_image_understanding(state: PlanningState) -> str:
+    return state.get("route", "general_answer")
+
 def route_after_planning_agent(state: PlanningState) -> str:
     if state.get("area_decision_pending") or state.get("area_mode_pending"):
         return "end"
@@ -608,6 +666,10 @@ def build_planning_orchestrator():
     graph = StateGraph(PlanningState)
 
     graph.add_node("router", router_node)
+    graph.add_node("image_understanding", image_understanding_node)
+    
+    graph.add_node("sketch_analysis_node", sketch_agent_instance.analysis_node)          
+    graph.add_node("sketch_extract_node", sketch_agent_instance.extract_node)    
     graph.add_node("reference_agent", reference_agent_node)
     graph.add_node("site_agent", site_agent_node)
     graph.add_node("extract_requirements", extract_requirements_node)
@@ -622,6 +684,7 @@ def build_planning_orchestrator():
         "router",
         route_after_router,
         {
+            "image_understanding": "image_understanding", # 이미지 진입 분기 추가
             "reference_agent": "reference_agent",
             "site_agent": "site_agent",
             "extract_requirements": "extract_requirements",
@@ -630,6 +693,21 @@ def build_planning_orchestrator():
             "general_answer": "general_answer",
         },
     )
+    
+    # 이미지 전용 조건부 에지 맵 추가
+    graph.add_conditional_edges(
+        "image_understanding",
+        route_after_image_understanding,
+        {
+            "sketch_agent_node": "sketch_analysis_node",
+            "reference_agent": "reference_agent",
+            "general_answer": "general_answer"
+        }
+    )
+
+    # 손도면 흐름 연결 후 한 턴 대기종료
+    graph.add_edge("sketch_analysis_node", "sketch_extract_node")
+    graph.add_edge("sketch_extract_node", END)
 
     graph.add_edge("reference_agent", END)
     graph.add_edge("site_agent", END)
