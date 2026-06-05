@@ -50,3 +50,10 @@ class CADlyGenerationState(TypedDict, total=False):
     mcp_requested_action: str
     cad_import_status: str
     cad_import_result: Dict[str, Any]
+
+    # QCAD generation
+    qcad_output_dir: str
+    qcad_dxf_path: str
+
+    # generation mode
+    generation_mode: Literal["sampling", "qcad"]

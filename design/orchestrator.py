@@ -14,9 +14,16 @@ from design.validation_node import validate_generator_graph
 from design.sampling_node import run_sampling
 from design.repair.repair_agent import repair_agent
 from design.cad_import_node import cad_import_node
+from design.mcp_generation.run_qcad_node import run_qcad_node
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]   # CADly/
 HD_ROOT = PROJECT_ROOT / "house_diffusion"            # CADly/house_diffusion
+
+def route_generatrion_mode(state: CADlyGenerationState) -> str:
+    mode = state.get("generation_mode", "sampling")
+    if mode == "qcad":
+        return "run_qcad_node"
+    return "run_sampling"
 
 def save_graph_json(state: CADlyGenerationState) -> CADlyGenerationState:
     graph_data = state.get("graph_data")
@@ -74,7 +81,7 @@ def run_repair_agent(state: CADlyGenerationState) -> CADlyGenerationState:
         "repair_history": [],
     }
 
-    return repair_agent.invoke(state)
+    return repair_agent.invoke(repair_input)
 
 def should_continue_after_validation(state: CADlyGenerationState) -> str:
     if state.get("status") in ["validation_failed", "error"]:
@@ -91,15 +98,27 @@ def should_continue_after_sampling(state: CADlyGenerationState) -> str:
         return "end"
     return "continue"
 
+def should_continue_after_generation(state: CADlyGenerationState) -> str:
+    if state.get("status") == "qcad_generation_success":
+        if state.get("enable_cad_import", False):
+            return "cad_import_node"
+
+    return END
+
+def should_continue_after_verification(state: CADlyGenerationState) -> str:
+    if state.get("enable_cad_import", False):
+        return "cad_import_node"
+
+    return END
+
 def should_continue_after_repair(state: CADlyGenerationState) -> str:
     if state.get("status") in [
         "repair_success",
         "repair_success_with_warnings",
     ]:
+        if state.get("enable_cad_import", False):
+            return "cad_import_node"
         return "end"
-
-    if state.get("enable_cad_import", False):
-        return "cad_import_node"
 
     return "end"
 
@@ -110,6 +129,7 @@ def build_design_orchestrator():
     graph.add_node("save_graph_json", save_graph_json)
     graph.add_node("run_sampling", run_sampling)
     graph.add_node("run_repair_agent", run_repair_agent)
+    graph.add_node("run_qcad_node", run_qcad_node)
     graph.add_node("cad_import_node", cad_import_node)
 
     graph.set_entry_point("validate_generator_graph")
@@ -119,6 +139,7 @@ def build_design_orchestrator():
         should_continue_after_validation,
         {
             "continue": "save_graph_json",
+            "run_qcad_node": "run_qcad_node",
             "end": END,
         },
     )
@@ -145,7 +166,16 @@ def build_design_orchestrator():
         "run_repair_agent",
         should_continue_after_repair,
         {
-            "continue": "cad_import_node",
+            "cad_import_node": "cad_import_node",
+            "end": END,
+        },
+    )
+
+    graph.add_conditional_edges(
+        "run_qcad_node",
+        should_continue_after_generation,
+        {
+            "cad_import_node": "cad_import_node",
             "end": END,
         },
     )

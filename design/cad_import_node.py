@@ -33,6 +33,18 @@ def cad_import_node(state: CADlyGenerationState) -> CADlyGenerationState:
                 ),
             },
         )
+    
+    elif target_cad == "qcad":
+        result = call_cad_import_tool(
+            "import_to_qcad",
+            {
+                "dxf_path": dxf_path,
+                "qcad_app_path": state.get(
+                    "qcad_app_path",
+                    "/Applications/QCAD.app",
+                ),
+            },
+        )
 
     else:
         return {
