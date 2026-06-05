@@ -1,3 +1,5 @@
+# 사용자가 전송하는 이미지가 있어 이 파일은 사용 X
+
 from pydantic import BaseModel
 from typing import List, Optional
 
