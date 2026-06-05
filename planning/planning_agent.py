@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from planning.area_recommender import recommend_area_plan
+from reference_agent.utils.message_content import extract_user_text
 
 
 class PlanningState(TypedDict, total=False):
@@ -258,8 +259,7 @@ class PlanningAgent:
         messages = state.get("messages", []) or []
         if not messages:
             return ""
-        content = messages[-1].content
-        return content if isinstance(content, str) else str(content)
+        return extract_user_text(messages[-1].content)
 
     def _parse_yes_no(self, text: str) -> Optional[Literal["yes", "no"]]:
         normalized = text.lower()

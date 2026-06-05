@@ -7,6 +7,7 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from pathlib import Path
 from reference_agent.agents.reference_agent import ReferenceAgent
+from reference_agent.utils.message_content import extract_user_text
 from site_agent.site_agent import SiteAgent
 from site_agent.site_analyzer import SiteAnalyzer
 from site_agent.config import PublicDataConfig
@@ -104,11 +105,15 @@ class PlanningState(TypedDict, total=False):
 
 
 # 유틸리티 함수
+def _has_image_input(state: PlanningState) -> bool:
+    return bool(state.get("image_path") or state.get("image_base64"))
+
+
 def messages_to_text(messages: List[BaseMessage]) -> str:
     lines = []
     for msg in messages:
         role = msg.type
-        content = msg.content
+        content = extract_user_text(msg.content)
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
@@ -170,8 +175,6 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
 
 # 노드 정의
 def router_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
-
     # "직접 입력"을 선택한 직후 턴은 무조건 요구사항 추출 노드로 보냅니다.
     if state.get("awaiting_manual_area_input"):
         return {"route": "extract_requirements"}
@@ -183,6 +186,10 @@ def router_node(state: PlanningState) -> PlanningState:
 
     # 컨셉 확인(레퍼런스 검색 여부) 대기 중이면 reference_agent로 보냅니다.
     if state.get("awaiting_concept_confirmation"):
+        return {"route": "reference_agent"}
+
+    # 업로드 이미지가 있으면 레퍼런스 검색으로 보냅니다.
+    if _has_image_input(state):
         return {"route": "reference_agent"}
 
     conversation = messages_to_text(state["messages"])
@@ -277,7 +284,7 @@ current_building_type = {state.get("building_type")}
 def reference_agent_node(state: PlanningState) -> PlanningState:
     # 예린 - 마지막 메시지는 현재 사용자 입력, 이전 메시지는 채팅 기록하여 이전 대화 흐름까지 참조하도록 수정 
     messages = state["messages"]
-    user_query = messages[-1].content
+    user_query = extract_user_text(messages[-1].content)
     chat_history = messages[:-1]
 
     concept_state = {
@@ -325,7 +332,7 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
     return update
 
 async def site_agent_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    user_query = extract_user_text(state["messages"][-1].content)
 
     result = await site_agent.run(user_query)
 
@@ -560,7 +567,7 @@ def handoff_to_design_node(state: PlanningState) -> PlanningState:
     }
 
 def general_answer_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    user_query = extract_user_text(state["messages"][-1].content)
 
     response = high_llm.invoke([
         SystemMessage(content="""

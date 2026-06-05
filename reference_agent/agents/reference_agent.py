@@ -68,7 +68,11 @@ class ReferenceAgent:
                 initial_state["image_base64"] = image_base64
             if image_media_type:
                 initial_state["image_media_type"] = image_media_type
-            initial_state["input_mode"] = "image_text" if (user_input or "").strip() else "image"
+            user_provided_text = (user_input or "").strip()
+            initial_state["user_provided_text"] = user_provided_text
+            initial_state["input_mode"] = (
+                "image_text" if user_provided_text else "image"
+            )
 
         if concept_state:
             for key in _CONCEPT_STATE_KEYS:

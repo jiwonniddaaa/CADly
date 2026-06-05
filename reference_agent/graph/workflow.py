@@ -20,6 +20,7 @@ class GraphState(TypedDict, total=False):
     image_base64: str
     image_media_type: str
     input_mode: str  # "text" | "image" | "image_text"
+    user_provided_text: str  # 사용자가 직접 입력한 텍스트(플레이스홀더 제외)
 
     # 채민 - reference search 전용 state
     search_query: str
@@ -178,7 +179,10 @@ def search_node(state: GraphState):
 
 # 예린 - 이미지 Vision llm 분석 후 검색어 추출
 def image_query_processing_node(state: GraphState) -> Dict[str, Any]:
-    user_text = extract_user_text(state["messages"][-1].content)
+    user_text = (state.get("user_provided_text") or "").strip()
+    input_mode = state.get("input_mode") or (
+        "image_text" if user_text else "image"
+    )
 
     try:
         image_data, media_type = resolve_image_source(
@@ -207,7 +211,7 @@ def image_query_processing_node(state: GraphState) -> Dict[str, Any]:
 
     사용자 추가 설명:
     {user_text or "(없음)"}
-    
+
     검색어 규칙:
     - 영어로만, 5~10개 단어 이내의 짧은 명사·형용사 위주
     - 문장·쉼표 나열·과도하게 구체적인 묘사는 피할 것
@@ -236,8 +240,6 @@ def image_query_processing_node(state: GraphState) -> Dict[str, Any]:
 
     fallback = user_text or "modern architecture interior reference"
     search_query = _parse_search_query(response.content, fallback)
-
-    input_mode = "image_text" if user_text else "image"
 
     return {
         "search_query": search_query,
