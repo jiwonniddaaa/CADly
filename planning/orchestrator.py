@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 dataset_path = PROJECT_ROOT / "data" / "mart_djy_03_clean.csv"
 db_path = PROJECT_ROOT / "data" / "mart_building_data.db"
 
-reference_agent_node = ReferenceAgent()
+reference_agent = ReferenceAgent()
 
 config = PublicDataConfig()
 public_client = PublicDataClient(config)
@@ -346,6 +346,9 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         user_query,
         chat_history=chat_history,
         concept_state=concept_state,
+        image_path=state.get("image_path"),
+        image_base64=state.get("image_base64"),
+        image_media_type=state.get("image_media_type"),
     )
 
     update: PlanningState = {
