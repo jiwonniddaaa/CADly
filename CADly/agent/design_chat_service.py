@@ -1,4 +1,3 @@
-# reference_agent/api/design_chat_service.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -6,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import AIMessage, HumanMessage
 
 from design.orchestrator import build_design_orchestrator
-from reference_agent.api.session_utils import (
+from CADly.agent.session_utils import (
     EPHEMERAL_STATE_KEYS,
     build_persisted_fields,
     get_last_ai_text,
@@ -87,7 +86,23 @@ async def run_design_chat(
     if resolved_image_path:
         invoke_state["image_path"] = resolved_image_path
 
+    # 디버깅용
+    print("\n========== DESIGN CHAT DEBUG ==========")
+    print("design_state:", design_state)
+    print("graph_data:", design_state.get("graph_data"))
+    print("======================================\n")
+
     result = await _design_app.ainvoke(invoke_state)
+
+    # 디버깅용
+    print("\n========== DESIGN RESULT DEBUG ==========")
+    print("status:", result.get("status"))
+    print("message:", result.get("message"))
+    print("svg_path:", result.get("svg_path"))
+    print("dxf_path:", result.get("dxf_path"))
+    print("errors:", result.get("validation_errors"))
+    print("warnings:", result.get("verification_warnings"))
+    print("========================================\n")
 
     persist_exclude = EPHEMERAL_STATE_KEYS | frozenset({"messages"})
     updated_design_state = build_persisted_fields(design_state, result, persist_exclude)

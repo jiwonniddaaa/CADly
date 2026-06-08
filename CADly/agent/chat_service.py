@@ -1,11 +1,10 @@
-# reference_agent/api/chat_service.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from reference_agent.api.design_chat_service import run_design_chat
-from reference_agent.api.planning_chat_service import run_planning_chat
-from reference_agent.api.session_utils import split_session_blob
+from CADly.agent.design_chat_service import run_design_chat
+from CADly.agent.planning_chat_service import run_planning_chat
+from CADly.agent.session_utils import split_session_blob
 
 
 async def run_cadly_chat(
@@ -37,6 +36,16 @@ async def run_cadly_chat(
         image_base64=image_base64,
         image_media_type=image_media_type,
     )
+    # 디버깅용
+    print("\n========== CADLY CHAT AFTER PLANNING ==========")
+    print("active_orchestrator:", result.get("active_orchestrator"))
+    print("route:", result.get("route"))
+    print("response:", result.get("response"))
+    print("design_state:", result.get("design_state"))
+    print("design_state keys:", (result.get("design_state") or {}).keys())
+    print("graph_data:", (result.get("design_state") or {}).get("graph_data"))
+    print("planning_state keys:", (result.get("planning_state") or {}).keys())
+    print("==============================================\n")
 
     # handoff 직후 Design 자동 실행: HD 입력은 design_state.graph_data (query 아님)
     # Planning이 이미 사용자 확인 메시지를 messages에 넣었으므로 중복 append 금지

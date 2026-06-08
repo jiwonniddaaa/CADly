@@ -6,6 +6,7 @@ import { cadlyApi } from '../services/api';
 const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent, setDesignOutput, projectId, messages, setMessages }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [attachedImage, setAttachedImage] = useState(null);
+  const [isSending, setIsSending] = useState(false);
   const fileInputRef = useRef(null);
 
   const handleFileChange = (e) => {
@@ -18,6 +19,7 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
   };
 
   const handleSendMessage = async () => {
+    if (isSending) return;
     if (!inputMessage.trim() && !attachedImage) return;
 
     const newMsg = { 
@@ -33,6 +35,7 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
 
     setInputMessage('');
     setAttachedImage(null);
+    setIsSending(true);
 
     try {
       const response = await cadlyApi.sendMessage(textToSend, projectId, imageToSend);
@@ -63,6 +66,16 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
       }
     } catch (error) {
       console.error("Failed to send message", error);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSendMessage();
     }
   };
 
@@ -142,9 +155,14 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
             placeholder={attachedImage ? "이미지와 함께 보낼 메시지를 입력하세요..." : "Ask about site restrictions or request a massing plan..."}
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+            onKeyDown={handleKeyDown}
           />
-          <button onClick={handleSendMessage} className="p-2 bg-[#002d5a] text-white rounded-lg hover:bg-[#001f3f] transition-colors outline-none shadow-sm flex-shrink-0">
+          <button 
+            type="button"
+            onClick={handleSendMessage}
+            disabled={isSending}
+            className="p-2 bg-[#002d5a] text-white rounded-lg hover:bg-[#001f3f] transition-colors outline-none shadow-sm flex-shrink-0 disabled:opacity-50"
+          >
             <Send className="w-4 h-4" />
           </button>
         </div>
