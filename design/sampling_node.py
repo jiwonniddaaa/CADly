@@ -25,6 +25,10 @@ def run_sampling(state: CADlyGenerationState) -> CADlyGenerationState:
     out_dir = resolve_hd_path(state.get("out_dir", "outputs/cadly"))
     name = state.get("name", "floorplan")
 
+    dataset = state.get("dataset", "rplan")
+    set_name = state.get("set_name", "eval")
+    target_set = state.get("target_set", 8)
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not graph_json_path.exists():
@@ -54,6 +58,12 @@ def run_sampling(state: CADlyGenerationState) -> CADlyGenerationState:
         str(out_dir),
         "--name",
         name,
+        "--dataset",
+        str(dataset),
+        "--set_name",
+        str(set_name),
+        "--target_set",
+        str(target_set),
     ]
 
     try:
