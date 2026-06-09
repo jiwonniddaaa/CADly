@@ -11,3 +11,5 @@ uvicorn
 pydantic
 pydantic-settings
 python-dotenv
+Pillow
+pillow-heif

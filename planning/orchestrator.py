@@ -215,7 +215,13 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
 
 # 노드 정의
 def router_node(state: PlanningState) -> PlanningState:
-    if state.get("image_path"):
+    if state.get("image_base64"):
+        return {
+            "route": "image_understanding"
+        }
+
+    image_path = state.get("image_path")
+    if image_path and Path(image_path).is_file():
         return {
             "route": "image_understanding"
         }
@@ -740,7 +746,8 @@ def build_planning_orchestrator():
         {
             "sketch_agent_node": "sketch_analysis_node",
             "reference_agent": "reference_agent",
-            "general_answer": "general_answer"
+            "general_answer": "general_answer",
+            "end": END,
         }
     )
 

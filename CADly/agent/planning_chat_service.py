@@ -1,6 +1,9 @@
+# CADly/agent/planning_chat_service.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+
+import base64
 
 from langchain_core.messages import HumanMessage
 
@@ -9,8 +12,10 @@ from planning.orchestrator import build_planning_orchestrator
 from CADly.agent.session_utils import (
     EPHEMERAL_STATE_KEYS,
     build_persisted_fields,
+    decode_image_base64,
     get_last_ai_text,
     merge_session_blob,
+    normalize_upload_image,
     persist_upload_image,
     split_session_blob,
 )
@@ -94,6 +99,23 @@ async def run_planning_chat(
         concept_state,
     )
     messages = [*history_messages, HumanMessage(content=user_text)]
+
+    if image_base64:
+        try:
+            normalized_bytes, image_media_type = normalize_upload_image(
+                decode_image_base64(image_base64),
+                image_media_type,
+            )
+            image_base64 = base64.b64encode(normalized_bytes).decode("utf-8")
+        except ValueError as exc:
+            return {
+                "response": str(exc),
+                "search_results": [],
+                "planning_state": planning_state or {},
+                "agent_type": "agent",
+                "route": "",
+                "active_orchestrator": "planning",
+            }
 
     resolved_image_path = image_path
     if image_base64 and not resolved_image_path:
