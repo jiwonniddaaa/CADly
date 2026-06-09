@@ -7,6 +7,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from planning.area_recommender import recommend_area_plan
+from planning.pending_state import (
+    PendingAction,
+    clear_pending,
+    is_pending,
+    normalize_pending_action,
+    set_pending,
+)
 from reference_agent.utils.message_content import extract_user_text
 
 
@@ -21,13 +28,16 @@ class PlanningState(TypedDict, total=False):
     ready_for_design: bool
     area_recommendation_result: Optional[Dict[str, Any]]
     next_step: Literal["end", "area_recommendation", "build_design_payload"]
-    area_decision_pending: bool
-    area_mode_pending: bool
-    awaiting_manual_area_input: bool
+    pending_action: PendingAction
 
 
 class PlanningAgent:
-    """검증 + 면적 의사결정 + 면적 추천을 담당하는 내부 LangGraph 에이전트."""
+    """검증 + 면적 의사결정 + 면적 추천을 담당하는 내부 LangGraph 에이전트.
+
+    세부 공간 면적의 자연어 파싱은 담당하지 않습니다.
+    직접 입력이 필요하면 ``pending_action=manual_area_input`` 만 세팅하고,
+    다음 사용자 턴은 orchestrator ``router_node`` 가 ``extract_requirements`` 로 보냅니다.
+    """
 
     def __init__(self) -> None:
         graph = StateGraph(PlanningState)
@@ -54,18 +64,31 @@ class PlanningAgent:
             "output_name": state.get("output_name"),
             "building_type": state.get("building_type"),
             "site_analysis": state.get("site_analysis"),
-            "area_decision_pending": state.get("area_decision_pending", False),
-            "area_mode_pending": state.get("area_mode_pending", False),
-            "awaiting_manual_area_input": state.get("awaiting_manual_area_input", False),
+            "pending_action": normalize_pending_action(state),
         }
         return self.app.invoke(initial_state)
 
+    @staticmethod
+    def _manual_area_input_prompt() -> str:
+        return (
+            "각 공간의 면적을 직접 입력해 주세요.\n"
+            "예: 거실 24, 주방 12, 침실1 14, 침실2 12, 화장실 5"
+        )
+
     # verification_node
     def verification_node(self, state: PlanningState) -> PlanningState:
+        # 면적 입력 대기 중이면 파싱하지 않고 pending만 유지 (파싱은 extract_requirements)
+        if is_pending(state, "manual_area_input"):
+            return {
+                "ready_for_design": False,
+                "next_step": "end",
+                **set_pending("manual_area_input"),
+            }
+
         # 1) 이전 턴에서 의사결정 질문 중이었다면 먼저 답변 해석
-        if state.get("area_decision_pending"):
+        if is_pending(state, "area_decision"):
             return self._handle_area_decision_answer(state)
-        if state.get("area_mode_pending"):
+        if is_pending(state, "area_mode"):
             return self._handle_area_mode_answer(state)
 
         # 2) 일반 검증 수행
@@ -97,12 +120,13 @@ class PlanningAgent:
                 return {
                     "ready_for_design": False,
                     "missing_requirements": ["세부 공간 면적"],
+                    **set_pending("manual_area_input"),
                     "next_step": "end",
                     "messages": [
                         AIMessage(
                             content=(
                                 "세부 공간 면적이 비어 있지만 추천 계산에 필요한 대지/법규 정보가 부족합니다.\n"
-                                "각 공간의 면적을 직접 입력해 주세요."
+                                + self._manual_area_input_prompt()
                             )
                         )
                     ],
@@ -111,9 +135,7 @@ class PlanningAgent:
                 "ready_for_design": True,
                 "missing_requirements": [],
                 "next_step": "end",
-                "area_decision_pending": True,
-                "area_mode_pending": False,
-                "awaiting_manual_area_input": False,
+                **set_pending("area_decision"),
                 "messages": [
                     AIMessage(
                         content=(
@@ -130,6 +152,7 @@ class PlanningAgent:
             "ready_for_design": True,
             "missing_requirements": [],
             "next_step": "build_design_payload",
+            **clear_pending(),
         }
 
     # area_recommend_node
@@ -143,6 +166,7 @@ class PlanningAgent:
         if result.get("status") != "success":
             return {
                 "area_recommendation_result": result,
+                **clear_pending(),
                 "next_step": "end",
                 "messages": [
                     AIMessage(content=result.get("message", "면적 추천을 생성하지 못했습니다."))
@@ -167,9 +191,7 @@ class PlanningAgent:
         return {
             "area_recommendation_result": result,
             "spaces": updated_spaces,
-            "area_decision_pending": False,
-            "area_mode_pending": False,
-            "awaiting_manual_area_input": False,
+            **clear_pending(),
             "next_step": "build_design_payload",
             "messages": [AIMessage(content="추천값(기본값)으로 세부 면적을 계산해 반영했습니다.")],
         }
@@ -182,22 +204,16 @@ class PlanningAgent:
         decision = self._parse_yes_no(user_text)
 
         if decision == "no":
-            # 아니오: 바로 추천값 반영
             return {
-                "area_decision_pending": False,
-                "area_mode_pending": False,
-                "awaiting_manual_area_input": False,
+                **clear_pending(),
                 "next_step": "area_recommendation",
                 "messages": [
                     AIMessage(content="추천값(기본값)으로 계산하여 반영하겠습니다.")
                 ],
             }
         if decision == "yes":
-            # 네: 직접 입력 또는 추천 선택
             return {
-                "area_decision_pending": False,
-                "area_mode_pending": True,
-                "awaiting_manual_area_input": False,
+                **set_pending("area_mode"),
                 "next_step": "end",
                 "messages": [
                     AIMessage(
@@ -212,8 +228,7 @@ class PlanningAgent:
             }
 
         return {
-            "area_decision_pending": True,
-            "awaiting_manual_area_input": False,
+            **set_pending("area_decision"),
             "next_step": "end",
             "messages": [
                 AIMessage(content="네/아니오로 답해 주세요. 구체적인 면적을 설정하시겠습니까?")
@@ -226,29 +241,21 @@ class PlanningAgent:
 
         if mode == "recommend":
             return {
-                "area_mode_pending": False,
-                "awaiting_manual_area_input": False,
+                **clear_pending(),
                 "next_step": "area_recommendation",
                 "messages": [AIMessage(content="추천값을 계산해 반영하겠습니다.")],
             }
         if mode == "manual":
             return {
-                "area_mode_pending": False,
-                "awaiting_manual_area_input": True,
+                **set_pending("manual_area_input"),
                 "next_step": "end",
                 "messages": [
-                    AIMessage(
-                        content=(
-                            "각 공간의 면적을 직접 입력해 주세요.\n"
-                            "예: 거실 24, 주방 12, 침실1 14, 침실2 12, 화장실 5"
-                        )
-                    )
+                    AIMessage(content=self._manual_area_input_prompt())
                 ],
             }
 
         return {
-            "area_mode_pending": True,
-            "awaiting_manual_area_input": False,
+            **set_pending("area_mode"),
             "next_step": "end",
             "messages": [
                 AIMessage(content="진행 방식을 '직접 입력' 또는 '추천값'으로 답해 주세요.")

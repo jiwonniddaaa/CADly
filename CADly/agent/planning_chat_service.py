@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import HumanMessage
 
+from planning.pending_state import migrate_pending_fields, reference_awaiting_from_pending
 from planning.orchestrator import build_planning_orchestrator
 from CADly.agent.session_utils import (
     EPHEMERAL_STATE_KEYS,
@@ -34,7 +35,6 @@ def _merge_legacy_concept_state(
             merged[planning_key] = concept_state[legacy_key]
 
     for key in (
-        "awaiting_concept_confirmation",
         "concept_keywords",
         "design_intent",
         "narrative",
@@ -44,7 +44,10 @@ def _merge_legacy_concept_state(
         if key in concept_state:
             merged[key] = concept_state[key]
 
-    return merged
+    if "pending_action" not in merged and concept_state.get("awaiting_concept_confirmation"):
+        merged["pending_action"] = "concept_confirmation"
+
+    return migrate_pending_fields(merged)
 
 
 def _load_session_state(
@@ -166,9 +169,7 @@ async def run_planning_chat(
         "narrative": result.get("narrative", ""),
         "concept_structured": result.get("concept_structured", {}),
         "concept_updated_at": result.get("concept_updated_at", ""),
-        "awaiting_concept_confirmation": result.get(
-            "awaiting_concept_confirmation", False
-        ),
+        "pending_action": result.get("pending_action", "none"),
         "image_type": result.get("image_type"),
         "active_orchestrator": active_orchestrator,
         "design_state": design_state,

@@ -12,6 +12,15 @@ from site_agent.site_agent import SiteAgent
 from site_agent.site_analyzer import SiteAnalyzer
 from site_agent.config import PublicDataConfig
 from site_agent.public_data_client import PublicDataClient
+from planning.pending_state import (
+    PendingAction,
+    clear_pending,
+    is_pending,
+    normalize_pending_action,
+    reference_awaiting_from_pending,
+    resolve_pending_after_planning_agent,
+    route_for_pending,
+)
 from planning.planning_agent import PlanningAgent
 from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
@@ -77,7 +86,6 @@ class PlanningState(TypedDict, total=False):
     narrative: Optional[str]
     concept_structured: Optional[Dict[str, Any]]
     concept_updated_at: Optional[str]
-    awaiting_concept_confirmation: bool
 
     references: Optional[List[Dict[str, Any]]]
     site_analysis: Optional[Dict[str, Any]]
@@ -94,7 +102,6 @@ class PlanningState(TypedDict, total=False):
     # checker results
     missing_requirements: List[str]
     ready_for_design: bool
-    design_confirmation: bool
 
     # final handoff payload
     design_payload: Optional[Dict[str, Any]]
@@ -104,10 +111,8 @@ class PlanningState(TypedDict, total=False):
 
     # area recommendation state
     area_recommendation_result: Optional[Dict[str, Any]]
-    area_decision_pending: bool
-    area_mode_pending: bool
     next_step: Optional[str]
-    awaiting_manual_area_input: bool
+    pending_action: PendingAction
 
     # [추가] 이미지 처리용 컨텍스트 정보
     image_path: Optional[str]
@@ -135,6 +140,14 @@ def safe_json_loads(text: str) -> dict:
         if start != -1 and end != -1:
             return json.loads(text[start:end + 1])
         raise ValueError(f"JSON parsing failed: {text}")
+
+
+def _last_user_message_text(state: PlanningState) -> str:
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    content = messages[-1].content
+    return content if isinstance(content, str) else str(content)
 
 def _encode_image(image_path: str) -> Tuple[str, str]:
     path = Path(image_path)
@@ -224,18 +237,9 @@ def router_node(state: PlanningState) -> PlanningState:
             "image_path": extracted_image_path
         }
 
-    # "직접 입력"을 선택한 직후 턴은 무조건 요구사항 추출 노드로 보냅니다.
-    if state.get("awaiting_manual_area_input"):
-        return {"route": "extract_requirements"}
-
-    # PlanningAgent가 사용자 면적 의사결정(yes/no 또는 입력 방식 선택)을 기다리는 상태면
-    # LLM 라우팅을 우회하고 planning_agent로 직접 보냅니다.
-    if state.get("area_decision_pending") or state.get("area_mode_pending"):
-        return {"route": "planning_agent"}
-
-    # 컨셉 확인(레퍼런스 검색 여부) 대기 중이면 reference_agent로 보냅니다.
-    if state.get("awaiting_concept_confirmation"):
-        return {"route": "reference_agent"}
+    pending_route = route_for_pending(state)
+    if pending_route:
+        return {"route": pending_route}
 
     conversation = messages_to_text(state["messages"])
     system_prompt = """
@@ -275,7 +279,6 @@ Routes:
 
 CRITICAL ROUTING PRIORITIES & RULES:
 - If has_design_payload is true and the previous assistant message asked for confirmation and the user confirms, route to handoff_to_design.
-- If design_confirmation is false and the user asks to make/generate a drawing, route to extract_requirements first.
 - Return only JSON.
 
 Few-Shot Examples:
@@ -301,6 +304,7 @@ current_spaces = {json.dumps(state.get("spaces", []), ensure_ascii=False)}
 current_edges = {json.dumps(state.get("edges", []), ensure_ascii=False)}
 current_output_name = {state.get("output_name")}
 current_building_type = {state.get("building_type")}
+pending_action = {normalize_pending_action(state)!r}
 """
 
     response = low_llm.invoke([
@@ -308,7 +312,11 @@ current_building_type = {state.get("building_type")}
         HumanMessage(content=user_prompt),
     ])
 
-    parsed = safe_json_loads(response.content)
+    try:
+        parsed = safe_json_loads(response.content)
+    except ValueError:
+        return {"route": "general_answer"}
+
     route = parsed.get("route", "general_answer")
     # 예린 - 라우터가 허용된 값만 반환하도록 화이트리스트로 방어
     allowed_routes = {
@@ -339,7 +347,7 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         "design_intent": state.get("design_intent") or "",
         "narrative": state.get("narrative") or "",
         "concept_structured": state.get("concept_structured") or {},
-        "awaiting_concept_confirmation": state.get("awaiting_concept_confirmation", False),
+        "awaiting_concept_confirmation": reference_awaiting_from_pending(state),
     }
 
     result = reference_agent.chat(
@@ -351,16 +359,18 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         image_media_type=state.get("image_media_type"),
     )
 
+    ref_awaiting = result.get("awaiting_concept_confirmation", False)
     update: PlanningState = {
         "references": result.get("search_results", result.get("images", [])),
         "concept": result.get("concept_result") or state.get("concept"),
         "messages": [
             AIMessage(content=result.get("response", "레퍼런스 분석을 완료했습니다."))
         ],
-        "awaiting_concept_confirmation": result.get(
-            "awaiting_concept_confirmation", False
-        ),
     }
+    if ref_awaiting:
+        update["pending_action"] = "concept_confirmation"
+    elif is_pending(state, "concept_confirmation"):
+        update["pending_action"] = "none"
 
     # 예린 - 컨셉 개발 의도가 있거나 컨셉 결과가 있으면 컨셉 상태를 업데이트함
     if result.get("intent") == "concept_develop" or result.get("concept_result"):
@@ -400,7 +410,9 @@ async def site_agent_node(state: PlanningState) -> PlanningState:
     }
 
 def extract_requirements_node(state: PlanningState) -> PlanningState:
-    conversation = messages_to_text(state["messages"])
+    latest_user_message = _last_user_message_text(state)
+    recent_messages = state.get("messages") or []
+    recent_conversation = messages_to_text(recent_messages[-6:])
 
     current_spaces = state.get("spaces", [])
     current_edges = state.get("edges", [])
@@ -475,8 +487,11 @@ Current output_name:
 Current building_type:
 {current_building_type}
 
-Conversation:
-{conversation}
+Latest user message:
+{latest_user_message}
+
+Recent conversation:
+{recent_conversation}
 """
 
     response = high_llm.invoke([
@@ -484,15 +499,28 @@ Conversation:
         HumanMessage(content=user_prompt),
     ])
 
-    parsed = safe_json_loads(response.content)
+    try:
+        parsed = safe_json_loads(response.content)
+    except ValueError:
+        retry_hint = (
+            "요구사항을 정확히 이해하지 못했습니다. "
+            "공간 구성, 면적, 파일명, 건물 유형을 다시 입력해 주세요."
+        )
+        if is_pending(state, "manual_area_input"):
+            retry_hint = (
+                "면적 입력을 이해하지 못했습니다. "
+                "예: 거실 24, 주방 12, 침실1 14 형식으로 다시 입력해 주세요."
+            )
+        return {
+            "messages": [AIMessage(content=retry_hint)],
+        }
 
     return {
         "spaces": parsed.get("spaces", current_spaces),
         "edges": parsed.get("edges", current_edges),
         "output_name": parsed.get("output_name") or current_output_name,
         "building_type": parsed.get("building_type") or current_building_type,
-        "awaiting_manual_area_input": False,
-        "design_confirmation": False,
+        **clear_pending(),
     }
 
 def planning_agent_node(state: PlanningState) -> PlanningState:
@@ -502,9 +530,7 @@ def planning_agent_node(state: PlanningState) -> PlanningState:
         "missing_requirements": result.get("missing_requirements", []),
         "spaces": result.get("spaces", state.get("spaces", [])),
         "area_recommendation_result": result.get("area_recommendation_result"),
-        "area_decision_pending": result.get("area_decision_pending", False),
-        "area_mode_pending": result.get("area_mode_pending", False),
-        "awaiting_manual_area_input": result.get("awaiting_manual_area_input", False),
+        "pending_action": resolve_pending_after_planning_agent(result, state),
         "next_step": result.get("next_step"),
         "messages": result.get("messages", []),
     }
@@ -663,7 +689,7 @@ def route_after_image_understanding(state: PlanningState) -> str:
     return state.get("route", "general_answer")
 
 def route_after_planning_agent(state: PlanningState) -> str:
-    if state.get("area_decision_pending") or state.get("area_mode_pending"):
+    if is_pending(state, "area_decision", "area_mode"):
         return "end"
 
     if state.get("next_step") == "build_design_payload":
