@@ -1,8 +1,9 @@
+// CADly/CADly_FE/src/views/UnifiedChatView.jsx
 import React, { useState, useRef } from 'react';
 import { Send, Paperclip } from 'lucide-react';
 import { cadlyApi } from '../services/api';
 
-const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent, projectId, messages, setMessages }) => {
+const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent, setDesignOutput, projectId, messages, setMessages }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [attachedImage, setAttachedImage] = useState(null);
   const fileInputRef = useRef(null);
@@ -36,18 +37,30 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
     try {
       const response = await cadlyApi.sendMessage(textToSend, projectId, imageToSend);
 
-      if (response.cad_svg_content) {
-        setCadSvgContent(response.cad_svg_content);
-        onNavigateToGeneration();
-        return;
-      }
-
       const agentMsg = {
         sender: 'agent',
         text: response.response,
-        imageUrls: response.image_urls || []
+        imageUrls: response.image_urls || [],
+        route: response.route || '',
+        agentType: response.agent_type || 'agent',
+        routeLabel: response.route_label || '에이전트',
+        activeOrchestrator: response.active_orchestrator || 'planning',
+        debug: response.debug || null,
       };
       setMessages(prev => [...prev, agentMsg]);
+
+      if (response.svg_path || response.dxf_path || response.design_status) {
+        setDesignOutput({
+          svgPath: response.svg_path || null,
+          dxfPath: response.dxf_path || null,
+          status: response.design_status || null,
+        });
+      }
+
+      if (response.cad_svg_content) {
+        setCadSvgContent(response.cad_svg_content);
+        onNavigateToGeneration();
+      }
     } catch (error) {
       console.error("Failed to send message", error);
     }
@@ -72,7 +85,24 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[75%] p-4 rounded-xl border ${msg.sender === 'user' ? 'bg-[#002d5a] border-[#001f3f] text-white' : 'bg-gray-50 border-gray-200 text-slate-800'}`}>
-              
+              {msg.sender === 'agent' && msg.routeLabel && (
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <span className="inline-flex items-center rounded-full bg-[#002d5a]/10 px-2 py-0.5 text-[10px] font-semibold text-[#002d5a]">
+                    {msg.routeLabel}
+                  </span>
+                  {msg.activeOrchestrator === 'design' && (
+                    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                      설계 단계
+                    </span>
+                  )}
+                  {msg.debug && (
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {msg.debug.route || msg.route}
+                    </span>
+                  )}
+                </div>
+              )}
+
               {msg.userImageUrl && (
                 <img src={msg.userImageUrl} alt="User Upload" className="w-full h-40 object-cover rounded-lg mb-3 border border-blue-400/30" />
               )}

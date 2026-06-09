@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { ArrowLeft, Menu, FileText, Loader2, ArrowUpRight } from 'lucide-react';
 import { cadlyApi } from '../services/api';
 
-const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
+const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, projectId }) => {
   // 1. 우측 제어 사이드바 토글 상태
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
@@ -129,13 +129,35 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, projectId }) => {
           <div className="p-8 flex flex-col gap-10 mt-4">
             <section>
               <h3 className="text-lg font-bold text-[#002d5a] mb-4">Files</h3>
-              <div className="border border-slate-200 bg-slate-50 rounded-lg p-4 flex items-center gap-4">
-                <FileText className="text-slate-400" size={24} />
-                <div>
-                  <p className="text-[13px] font-bold text-[#002d5a]">floorplan_rev_01.dxf</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5 tracking-wider">CAD INTERCHANGE | 4.2 MB</p>
+              {designOutput?.dxfPath || designOutput?.svgPath ? (
+                <div className="space-y-2">
+                  {designOutput.dxfPath && (
+                    <div className="border border-slate-200 bg-slate-50 rounded-lg p-4 flex items-start gap-4">
+                      <FileText className="text-slate-400 shrink-0" size={24} />
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-bold text-[#002d5a]">DXF</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5 break-all font-mono">{designOutput.dxfPath}</p>
+                      </div>
+                    </div>
+                  )}
+                  {designOutput.svgPath && (
+                    <div className="border border-slate-200 bg-slate-50 rounded-lg p-4 flex items-start gap-4">
+                      <FileText className="text-slate-400 shrink-0" size={24} />
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-bold text-[#002d5a]">SVG</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5 break-all font-mono">{designOutput.svgPath}</p>
+                      </div>
+                    </div>
+                  )}
+                  {designOutput.status && (
+                    <p className="text-[10px] text-slate-500 font-mono">status: {designOutput.status}</p>
+                  )}
                 </div>
-              </div>
+              ) : (
+                <div className="border border-dashed border-slate-200 bg-slate-50 rounded-lg p-4 text-[12px] text-slate-500">
+                  생성된 도면 파일 경로가 아직 없습니다.
+                </div>
+              )}
             </section>
 
             <section>

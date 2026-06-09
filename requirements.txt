@@ -7,6 +7,7 @@ pandas
 httpx
 requests
 fastapi
+uvicorn
 pydantic
 pydantic-settings
 python-dotenv

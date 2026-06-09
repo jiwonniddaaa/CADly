@@ -26,6 +26,12 @@ export const cadlyApi = {
     return response.data;
   },
 
+  // 세션(planning_state) 초기화 — New Project 시 호출
+  clearSession: async (projectId) => {
+    const response = await apiClient.delete(`/chat/session/${projectId}`);
+    return response.data;
+  },
+
   // 3D 파일 생성 요청 (바이너리 수신)
   generate3DModel: async (projectId, format) => {
     const response = await apiClient.post('/generate/3d', {

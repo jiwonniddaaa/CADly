@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.chat import router as chat_router
-from app.routers.generate import router as generate_router
+# TODO: Agent 서버의 3D 생성 API가 확정되면 다시 활성화합니다.
+# from app.routers.generate import router as generate_router
 
 app = FastAPI(title="CADly AI Gateway Server")
 
@@ -21,11 +22,12 @@ app.include_router(
     tags=["Chat"]
 )
 
-app.include_router(
-    generate_router, 
-    prefix="/api/v1/generate", 
-    tags=["Generation"]
-)
+# TODO: Agent 서버의 /agent/generate3d 제공 여부 확인 후 재연결합니다.
+# app.include_router(
+#     generate_router,
+#     prefix="/api/v1/generate",
+#     tags=["Generation"]
+# )
 
 @app.get("/")
 def root():
