@@ -1,3 +1,4 @@
+# planning/orchestrator.py
 from __future__ import annotations
 
 import json
@@ -19,9 +20,13 @@ from planning.pending_state import (
     normalize_pending_action,
     reference_awaiting_from_pending,
     resolve_pending_after_planning_agent,
-    route_for_pending,
 )
 from planning.planning_agent import PlanningAgent
+from planning.supervisor import (
+    build_session_context,
+    pending_reminder,
+    resolve_entry_route,
+)
 from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
 
@@ -213,7 +218,7 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
         "area_for_generation": area_for_generation,
     }
 
-# 노드 정의
+# 노드 정의 — 진입 라우팅: deterministic pre-check → Supervisor LLM
 def router_node(state: PlanningState) -> PlanningState:
     if state.get("image_base64"):
         return {
@@ -243,103 +248,8 @@ def router_node(state: PlanningState) -> PlanningState:
             "image_path": extracted_image_path
         }
 
-    pending_route = route_for_pending(state)
-    if pending_route:
-        return {"route": pending_route}
-
-    conversation = messages_to_text(state["messages"])
-    system_prompt = """
-You are the planning orchestrator router for CADly.
-
-Choose exactly one route.
-
-Routes:
-
-1. reference_agent
-- User asks for architectural/interior design references, styles, ideas, or examples.
-- User wants to develop, clarify, or improve a design concept (e.g., "도시적", "모던한", "세련된 느낌").
-
-2. site_agent
-- user asks about site analysis
-- user asks about legal regulation, zoning, setbacks, FAR, BCR
-- user asks about sunlight, road, surroundings, land constraints
-- user asks about location, address, site, land, candidate site
-
-3. extract_requirements
-- user gives spatial requirements
-- user describes desired rooms, adjacency, size, area
-- user provides or changes output file name
-- user wants to organize the current plan
-- user asks to generate a drawing but has not confirmed a prepared design payload yet
-
-4. planning_agent
-- follow-up response for area decision flow (yes/no, manual/recommend)
-
-5. handoff_to_design
-- Choose this if a has_design_payload is true
-- and the previous assistant message asked for final generation confirmation
-- and the user clearly confirms generation
-
-6. general_answer
-- general response that does not need another agent
-
-CRITICAL ROUTING PRIORITIES & RULES:
-- If has_design_payload is true and the previous assistant message asked for confirmation and the user confirms, route to handoff_to_design.
-- Return only JSON.
-
-Few-Shot Examples:
-- "강남구 역삼동 땅에 지을만한 세련된 아파트 사진이나 사례 좀 찾아봐" -> reference_agent (Focus is on visual concepts/examples)
-- "역삼동 747 아파트 규제 법규나 건폐율 알려줘" -> site_agent
-- "방 3개랑 거실 구조로 도면 한번 설계해볼래?" -> extract_requirements (Initial request without confirmed payload)
-- "그래, 그 조건대로 도면 바로 생성해줘." (When payload is ready) -> handoff_to_design
-- "너 이름이 뭐야?" -> general_answer
-
-{
-  "route": "..."
-}
-"""
-
-    user_prompt = f"""
-Conversation:
-{conversation}
-
-Current state:
-has_design_payload = {state.get("design_payload") is not None}
-has_site_analysis = {state.get("site_analysis") is not None}
-current_spaces = {json.dumps(state.get("spaces", []), ensure_ascii=False)}
-current_edges = {json.dumps(state.get("edges", []), ensure_ascii=False)}
-current_output_name = {state.get("output_name")}
-current_building_type = {state.get("building_type")}
-pending_action = {normalize_pending_action(state)!r}
-"""
-
-    response = low_llm.invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt),
-    ])
-
-    try:
-        parsed = safe_json_loads(response.content)
-    except ValueError:
-        return {"route": "general_answer"}
-
-    route = parsed.get("route", "general_answer")
-    # 예린 - 라우터가 허용된 값만 반환하도록 화이트리스트로 방어
-    allowed_routes = {
-        "image_understanding",
-        "reference_agent",
-        "site_agent",
-        "extract_requirements",
-        "planning_agent",
-        "handoff_to_design",
-        "general_answer",
-    }
-    if route not in allowed_routes:
-        route = "general_answer"
-
-    return {
-        "route": route,
-    }
+    route = resolve_entry_route(state, low_llm)
+    return {"route": route}
 
 def reference_agent_node(state: PlanningState) -> PlanningState:
     # 예린 - 마지막 메시지는 현재 사용자 입력, 이전 메시지는 채팅 기록하여 이전 대화 흐름까지 참조하도록 수정 
@@ -521,13 +431,16 @@ Recent conversation:
             "messages": [AIMessage(content=retry_hint)],
         }
 
-    return {
+    update: PlanningState = {
         "spaces": parsed.get("spaces", current_spaces),
         "edges": parsed.get("edges", current_edges),
         "output_name": parsed.get("output_name") or current_output_name,
         "building_type": parsed.get("building_type") or current_building_type,
         **clear_pending(),
     }
+    if state.get("design_payload") is not None:
+        update["design_payload"] = None
+    return update
 
 def planning_agent_node(state: PlanningState) -> PlanningState:
     result = planning_agent.run(state)
@@ -652,39 +565,45 @@ def handoff_to_design_node(state: PlanningState) -> PlanningState:
     }
 
 def general_answer_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    """세션 state 기반 설명만 제공. planning state 필드는 변경하지 않음."""
+    user_query = _last_user_message_text(state)
+    session_context = build_session_context(state)
+    recent_messages = state.get("messages") or []
+    conversation = messages_to_text(recent_messages[-8:])
 
     response = high_llm.invoke([
         SystemMessage(content="""
 You are CADly, an AI architectural planning and design assistant.
 
-CADly helps users with:
-- architectural planning
-- spatial programming
-- design concept development
-- site and zoning understanding
-- floorplan generation workflows
-- architectural reference exploration
-- CAD-based design assistance
-
+Answer using the provided session state and conversation when relevant.
 Always respond in natural Korean.
 
 Guidelines:
-- Be concise but helpful.
-- Maintain the tone of a professional architectural design assistant.
-- When users ask casual questions, respond naturally while maintaining CADly's identity.
-- When users ask about architecture, space, buildings, planning, floorplans, design concepts, or CAD workflows, answer as an architectural planning/design assistant.
-- Do not pretend to have completed actions that were not actually executed.
-- If the user asks about capabilities, explain CADly as an architectural planning and design support system.
-"""
-),
-        HumanMessage(content=user_query),
+- Explain workflow stage, pending steps, site analysis, areas, and design payload clearly.
+- If generation area differs from what the user said, explain where the value came from.
+- Do not pretend to have changed the plan or executed agents in this turn.
+- Be concise but complete. Use bullet lists when comparing values.
+- For casual questions without session relevance, answer naturally as CADly.
+"""),
+        HumanMessage(content=f"""
+Recent conversation:
+{conversation}
+
+Session state (JSON):
+{session_context}
+
+User message:
+{user_query}
+"""),
     ])
 
+    answer = (response.content or "").strip()
+    reminder = pending_reminder(state)
+    if reminder and reminder not in answer:
+        answer = f"{answer}{reminder}"
+
     return {
-        "messages": [
-            AIMessage(content=response.content)
-        ]
+        "messages": [AIMessage(content=answer)],
     }
 
 # conditional 라우팅 함수
