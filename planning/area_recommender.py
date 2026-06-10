@@ -2,9 +2,74 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 
+# 공동주택 용적률 기반 연면적 상한에 곱하는 보정계수.
+# 법정 상한(대지면적 × 용적률)이 아니라, 알고리즘 안전성을 위해 보수적으로
+# 낮춘 "실효상한(Effective Limit)"을 정의하기 위한 값이다. (권장 범위 0.7~0.8)
+MULTI_FAMILY_EFFECTIVE_LIMIT_FACTOR = 0.75
+
+
+# 공간 유형별 (최소, 권장, 최대) 면적(㎡) 기준표.
+# 일반적인 국내 주거 건축 관행을 바탕으로 한 초안 값이며,
+# - 휴리스틱 총면적 추정(실 개수 대신 프로그램 합산)
+# - 총면적 추정치의 clamp 경계(최소합~최대합)
+# - 빈 공간 배분 시 하한 보정
+# 에 공통으로 재사용된다.
+# 동선/완충(복도, 진입)을 별도 grossing 계수 없이 표에 흡수해 둔다.
+ROOM_AREA_TABLE: Dict[str, Tuple[float, float, float]] = {
+    "living_room": (14.0, 22.0, 36.0),
+    "kitchen": (6.0, 10.0, 16.0),
+    "bedroom": (9.0, 13.0, 20.0),
+    "bathroom": (3.5, 5.0, 8.0),
+    "entrance": (2.5, 4.0, 7.0),
+    "storage": (2.0, 4.0, 8.0),
+    "dining_room": (6.0, 10.0, 16.0),
+    "study": (6.0, 9.0, 14.0),
+    "balcony": (2.0, 4.0, 8.0),
+    "corridor": (2.0, 4.0, 8.0),
+    "utility_room": (2.0, 4.0, 8.0),
+    "unknown": (3.0, 6.0, 10.0),
+}
+
+# ROOM_AREA_TABLE 튜플 인덱스 의미.
+_AREA_MIN_IDX = 0
+_AREA_REC_IDX = 1
+_AREA_MAX_IDX = 2
+
+# 휴리스틱 추정 시 건물 유형별 면적 스케일.
+# 공동주택 세대는 동일 구성이라도 단독주택보다 다소 작게 계획되는 경향을 반영한다.
+BUILDING_TYPE_AREA_FACTOR: Dict[str, float] = {
+    "single_family": 1.0,
+    "multi_family": 0.9,
+}
+
+
 # ------------------------------------------------------------
 # 유틸 함수
 # ------------------------------------------------------------
+
+def _room_area_bounds(room_type: Optional[str]) -> Tuple[float, float, float]:
+    """공간 유형의 (최소, 권장, 최대) 면적 기준을 반환한다. 미정의 유형은 unknown으로 대체."""
+    return ROOM_AREA_TABLE.get(room_type or "unknown", ROOM_AREA_TABLE["unknown"])
+
+
+def _sum_room_area(spaces: List[Dict[str, Any]], idx: int) -> float:
+    """공간 목록에 대해 ROOM_AREA_TABLE의 특정 기준(min/rec/max) 면적을 합산한다."""
+    return sum(_room_area_bounds(space.get("room_type")) [idx] for space in spaces)
+
+
+def _program_area_bounds(
+    spaces: List[Dict[str, Any]],
+    building_type: Optional[str],
+) -> Tuple[float, float, float]:
+    """
+    공간 구성(프로그램)에 기반한 (최소합, 권장합, 최대합) 면적을 계산한다.
+    건물 유형 스케일을 반영하며, 휴리스틱 추정과 clamp 경계 계산에 함께 사용된다.
+    """
+    factor = BUILDING_TYPE_AREA_FACTOR.get(building_type or "", 1.0)
+    min_sum = _sum_room_area(spaces, _AREA_MIN_IDX) * factor
+    rec_sum = _sum_room_area(spaces, _AREA_REC_IDX) * factor
+    max_sum = _sum_room_area(spaces, _AREA_MAX_IDX) * factor
+    return round(min_sum, 1), round(rec_sum, 1), round(max_sum, 1)
 
 def _clamp(value: float, min_value: float, max_value: float) -> float:
     """
@@ -224,7 +289,7 @@ def _infer_total_area(
     우선순위:
     1. Site Agent 분석 결과에 면적 정보가 있으면 해당 값을 우선 사용
     2. 사용자가 각 공간의 면적을 입력했다면 그 합계에 여유분 15%를 반영
-    3. 정보가 부족하면 건물 유형과 실 개수 기반 휴리스틱으로 추정
+    3. 정보가 부족하면 공간 유형별 권장 면적(ROOM_AREA_TABLE) 합으로 추정
 
     반환:
     - 추천 총면적
@@ -250,24 +315,15 @@ def _infer_total_area(
     if specified_sum > 0:
         return round(specified_sum * 1.15, 1), "user_specified_area_sum"
 
-    # 면적 정보가 없는 경우 실내 공간 개수를 기준으로 추정
-    room_count = len([s for s in spaces if s.get("room_type") != "outside"])
-    if room_count <= 0:
-        room_count = 3
+    # 면적 정보가 없는 경우, 공간 구성(프로그램)별 권장 면적의 합으로 추정한다.
+    # 실 개수만 보던 기존 휴리스틱과 달리 공간 유형(침실/욕실 등)을 반영한다.
+    indoor = [s for s in spaces if s.get("room_type") != "outside"]
+    if not indoor:
+        # 공간 정보가 전혀 없으면 unknown 3개 구성으로 가정해 최소한의 추정을 제공
+        indoor = [{"room_type": "unknown"} for _ in range(3)]
 
-    # 단독주택 휴리스틱: 기본 65㎡에서 실 개수에 따라 증가, 50~180㎡ 범위 제한
-    if building_type == "single_family":
-        estimate = _clamp(65 + 18 * (room_count - 2), 50, 180)
-        return float(round(estimate, 1)), "single_family_heuristic"
-
-    # 공동주택 휴리스틱: 기본 45㎡에서 실 개수에 따라 증가, 35~120㎡ 범위 제한
-    if building_type == "multi_family":
-        estimate = _clamp(45 + 12 * (room_count - 2), 35, 120)
-        return float(round(estimate, 1)), "multi_family_heuristic"
-
-    # 건물 유형이 불명확한 경우 일반적인 기준으로 추정
-    estimate = _clamp(55 + 15 * (room_count - 2), 40, 150)
-    return float(round(estimate, 1)), "generic_heuristic"
+    _, rec_sum, _ = _program_area_bounds(indoor, building_type)
+    return float(round(rec_sum, 1)), "room_program_heuristic"
 
 
 # ------------------------------------------------------------
@@ -286,8 +342,9 @@ def _regulatory_cap(
     - 건축면적 상한 = 대지면적 × 건폐율
 
     공동주택:
-    - 연면적 상한 = 대지면적 × 용적률
-    - 단, 추천면적은 연면적 상한의 75% 수준으로 보수적으로 제한
+    - 법정 연면적 상한 = 대지면적 × 용적률
+    - 단, 추천면적은 법정 상한이 아니라 보정계수를 곱한
+      "실효상한(Effective Limit)" 수준으로 보수적으로 제한
 
     반환:
     - 보정된 총면적
@@ -319,9 +376,10 @@ def _regulatory_cap(
     if building_type == "single_family" and max_building_area:
         capped = min(capped, max_building_area)
 
-    # 공동주택은 용적률 기반 연면적 상한의 일부만 추천 총면적으로 사용
+    # 공동주택은 법정 연면적 상한이 아니라 보정계수를 곱한 실효상한을 사용
     if building_type == "multi_family" and max_floor_area:
-        capped = min(capped, max_floor_area * 0.75)
+        effective_limit = max_floor_area * MULTI_FAMILY_EFFECTIVE_LIMIT_FACTOR
+        capped = min(capped, effective_limit)
 
     # 건물 유형이 불명확한 경우 용적률 기반 상한을 일반적으로 적용
     if building_type not in {"single_family", "multi_family"} and max_floor_area:
@@ -391,32 +449,90 @@ def recommend_area_plan(
     # 용도지역/주용도 정보를 반영해 공간별 가중치를 보정함
     _apply_zone_and_purpose_adjustments(weights, context)
 
-    # 입력된 공간들의 전체 가중치 합계를 계산함
-    total_weight = 0.0
+    # 면적이 이미 입력된 공간과 비어 있는 공간을 분리한다.
+    # 입력값은 그대로 보존하고, 잔여 면적(remaining)을 빈 공간끼리만 배분한다.
+    specified_spaces: List[Dict[str, Any]] = []
+    empty_spaces: List[Dict[str, Any]] = []
     for space in usable_spaces:
-        total_weight += weights.get(space.get("room_type", "unknown"), 0.8)
+        area = space.get("area")
+        if isinstance(area, (int, float)) and area > 0:
+            specified_spaces.append(space)
+        else:
+            empty_spaces.append(space)
 
-    # 혹시 가중치 합이 0 이하가 되면 공간 개수 기준으로 나누도록 보정함
-    if total_weight <= 0:
-        total_weight = float(len(usable_spaces))
+    specified_sum = sum(float(space["area"]) for space in specified_spaces)
 
-    # 각 공간별 추천 면적을 계산함
+    # 빈 공간이 ROOM_AREA_TABLE 기준으로 필요로 하는 최소 면적 합(하한).
+    factor = BUILDING_TYPE_AREA_FACTOR.get(building_type or "", 1.0)
+    empty_min_sum = round(_sum_room_area(empty_spaces, _AREA_MIN_IDX) * factor, 1)
+
+    # 빈 공간에 배분할 잔여 면적을 계산하고, 경계 상황을 보정한다.
+    remaining_area = round(total_area_m2 - specified_sum, 1)
+    distribution_notes: List[str] = []
+
+    if empty_spaces and remaining_area < empty_min_sum:
+        # 입력 면적이 추정 총면적에 근접/초과해 빈 공간 최소치를 못 채우는 경우
+        remaining_area = empty_min_sum
+        total_area_m2 = round(specified_sum + remaining_area, 1)
+        distribution_notes.append(
+            "입력 면적이 추정 총면적에 근접/초과하여, 빈 공간의 최소 면적을 "
+            "확보하도록 총면적을 상향 조정했습니다."
+        )
+    elif not empty_spaces:
+        # 모든 공간이 입력된 경우: 배분할 빈 공간이 없으므로 여유 버퍼는 의미가 없다.
+        # 총면적을 입력합과 일치시켜 (총면적 == 공간 합) 일관성을 유지한다.
+        remaining_area = 0.0
+        total_area_m2 = round(specified_sum, 1)
+
+    # 빈 공간 가중치 합 (0 이하 방어)
+    empty_weight = sum(
+        weights.get(space.get("room_type", "unknown"), 0.8) for space in empty_spaces
+    )
+    if empty_weight <= 0:
+        empty_weight = float(len(empty_spaces)) if empty_spaces else 1.0
+
+    # 각 빈 공간은 최소 면적을 보장하고, 그 위의 잉여분만 가중치 비율로 배분한다.
+    leftover_area = max(0.0, round(remaining_area - empty_min_sum, 1))
+
+    def _ratio_of(area_value: float) -> float:
+        return round(area_value / total_area_m2, 3) if total_area_m2 > 0 else 0.0
+
+    # 입력 순서를 보존하며 공간별 결과를 구성한다.
     recommended_spaces: List[Dict[str, Any]] = []
     for space in usable_spaces:
         room_type = space.get("room_type", "unknown")
+        area = space.get("area")
+        is_specified = isinstance(area, (int, float)) and area > 0
+
+        if is_specified:
+            recommended_area = round(float(area), 1)
+            recommended_spaces.append(
+                {
+                    "id": space.get("id"),
+                    "room_type": room_type,
+                    "recommended_area_m2": recommended_area,
+                    "ratio": _ratio_of(recommended_area),
+                    "source": "user_input",
+                    "reason": "사용자가 입력한 면적을 그대로 유지했습니다.",
+                }
+            )
+            continue
+
         weight = weights.get(room_type, 0.8)
-        ratio = weight / total_weight
-        recommended_area = round(total_area_m2 * ratio, 1)
+        share_ratio = weight / empty_weight
+        room_min = round(_room_area_bounds(room_type)[_AREA_MIN_IDX] * factor, 1)
+        recommended_area = round(room_min + leftover_area * share_ratio, 1)
 
         recommended_spaces.append(
             {
                 "id": space.get("id"),
                 "room_type": room_type,
                 "recommended_area_m2": recommended_area,
-                "ratio": round(ratio, 3),
+                "ratio": _ratio_of(recommended_area),
+                "source": "recommended",
                 "reason": (
-                    f"{room_type}의 프로그램 비중({round(ratio * 100, 1)}%)을 반영했으며, "
-                    f"{household} 가구 프로파일과 용도/지역 조정을 반영했습니다."
+                    f"빈 공간 잔여 면적을 {room_type}의 프로그램 비중"
+                    f"({round(share_ratio * 100, 1)}%)으로 배분하고 최소 면적을 보장했습니다."
                 ),
             }
         )
@@ -427,6 +543,9 @@ def recommend_area_plan(
         "공간별 세부 치수, 채광, 동선, 가구 배치 요구가 확정되면 정확도가 높아집니다.",
         f"가구 프로파일 추정: {household}",
     ]
+    if specified_spaces:
+        assumptions.append("입력된 공간 면적은 변경 없이 유지하고, 나머지 공간에만 잔여 면적을 배분했습니다.")
+    assumptions.extend(distribution_notes)
 
     # 추천 총면적을 어떤 기준으로 산정했는지 설명
     if source.startswith("site_analysis"):
@@ -434,7 +553,7 @@ def recommend_area_plan(
     elif source == "user_specified_area_sum":
         assumptions.append("사용자가 지정한 공간 면적 합계를 기준으로 공용/여유 면적을 반영했습니다.")
     else:
-        assumptions.append("현재 정보가 제한되어 룸 개수 기반 휴리스틱을 사용했습니다.")
+        assumptions.append("현재 정보가 제한되어 공간 유형별 권장 면적의 합으로 추정했습니다.")
 
     # 법규 기반 상한 보정이 발생한 경우 설명을 추가함
     assumptions.extend(cap_notes)
