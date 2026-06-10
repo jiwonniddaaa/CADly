@@ -1,3 +1,4 @@
+# planning/planning_agent.py
 from __future__ import annotations
 
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
@@ -79,6 +80,20 @@ class PlanningAgent:
     def verification_node(self, state: PlanningState) -> PlanningState:
         # 면적 입력 대기 중이면 파싱하지 않고 pending만 유지 (파싱은 extract_requirements)
         if is_pending(state, "manual_area_input"):
+            # 직접 입력 루프 중 '추천값' 전환 요청은 추천 계산으로 빠져나간다.
+            # 단, 질문/출처 문의는 전환이 아니라 설명 요청이므로 제외.
+            manual_text = self._last_user_text(state)
+            if (
+                self._parse_area_mode(manual_text) == "recommend"
+                and not self._is_question_or_source(manual_text)
+            ):
+                return {
+                    **clear_pending(),
+                    "next_step": "area_recommendation",
+                    "messages": [
+                        AIMessage(content="추천값(기본값)으로 계산하여 반영하겠습니다.")
+                    ],
+                }
             return {
                 "ready_for_design": False,
                 "next_step": "end",
@@ -277,6 +292,13 @@ class PlanningAgent:
         if any(token in normalized for token in [t.lower() for t in no_tokens]):
             return "no"
         return None
+
+    @staticmethod
+    def _is_question_or_source(text: str) -> bool:
+        raw = text or ""
+        if "?" in raw:
+            return True
+        return any(marker in raw for marker in ("출처", "기준", "어디서", "왜"))
 
     def _parse_area_mode(self, text: str) -> Optional[Literal["manual", "recommend"]]:
         normalized = text.lower().replace(" ", "")

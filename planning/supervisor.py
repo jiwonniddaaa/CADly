@@ -116,12 +116,16 @@ Routes:
 
 2. site_agent
 - User wants NEW site analysis for an address/location, or legal/zoning lookup on a site.
+- User asks to FIND/RECOMMEND a candidate site by conditions (region + area/coverage),
+  e.g. "강동구 천호동에 건축면적 30평 되는 주소 있을까?", "역삼동에 50평짜리 땅 추천해줘".
 - NOT for explaining already-stored site_analysis in session (use general_answer).
+- NOT when the user references an example/case to imitate (use reference_agent).
 
 3. extract_requirements
-- User states or changes spatial requirements: rooms, adjacency, file name, building type, target area.
+- User states or changes CONCRETE spatial requirements: specific rooms/counts, adjacency, file name, building type, target area.
 - User gives manual area input (e.g. "거실 24, 주방 12").
-- User corrects the plan with concrete requirement changes.
+- User corrects the plan with concrete requirement changes (e.g. "침실 하나 더 추가해줘").
+- NOT for vague aspirational wishes without concrete rooms/specs (use general_answer).
 
 4. planning_agent
 - User clearly continues a pending workflow step with a short flow answer:
@@ -135,6 +139,9 @@ Routes:
 - Q&A, review, explanation, complaint, status check about CURRENT session/plan/state.
 - Includes non-question phrasing: "25평으로 해달라고 했는데", "251.92 말고", "지금 뭐 하는 중인지 모르겠어",
   "생성 기준 면적 다시 확인해줘", "이상한데", "왜 그렇게 잡혔는지 모르겠어".
+- Vague aspirational design wishes WITHOUT concrete spatial specs
+  (e.g. "부모님이 살만한 2층 주택이면 좋겠어"): acknowledge, then ask the user to clarify
+  the direction (레퍼런스/스타일 탐색 / 공간 구성 정리 / 대지 분석).
 - Casual chat, capabilities, greetings when no specialized agent is needed.
 
 CRITICAL RULES (Supervisor behavior):
@@ -168,6 +175,10 @@ Guidelines:
 - Explain workflow stage, pending steps, and area provenance clearly.
 - Be concise. Use bullet lists when comparing values.
 - For casual questions without session relevance, answer naturally as CADly.
+- If the user expresses a vague design wish without concrete requirements
+  (e.g. "부모님이 살만한 2층 주택이면 좋겠어"), do NOT invent or extract requirements.
+  Briefly acknowledge, then ask which direction they want, offering concrete options:
+  레퍼런스/스타일 탐색, 공간 구성(요구사항) 정리, 대지 분석.
 """
 
 
@@ -558,7 +569,6 @@ _STATUS_QUERY_MARKERS = (
     "진행상황",
     "뭐 해야",
     "뭐해야",
-    "다음에",
     "다음 단계",
     "무슨 단계",
     "지금 뭐",
@@ -673,6 +683,38 @@ def _looks_like_site_address_input(user_text: str) -> bool:
     return True
 
 
+# 조건(면적/지역)으로 "대지·주소를 찾아 달라"는 후보 탐색형 표현.
+# 이런 자연어는 검색/요구/레퍼런스 의도가 섞이므로 deterministic 라우팅 대신
+# Supervisor(또는 site_agent 내부 clarification)에 위임한다.
+_SITE_CANDIDATE_MARKERS = (
+    "있을까",
+    "있나",
+    "있어",
+    "있는",
+    "추천",
+    "골라",
+    "구해",
+    "찾아",
+)
+
+
+def _looks_like_short_address_query(user_text: str) -> bool:
+    """'짧은 주소/지번 단독 입력'만 site_agent로 deterministic 라우팅.
+
+    조건으로 후보 대지를 찾아 달라는 자연어(예: "강동구 천호동에 30평 되는 주소 있을까?")는
+    여기서 제외하고 Supervisor가 판단하도록 둔다.
+    """
+    raw = (user_text or "").strip()
+    if not _looks_like_site_address_input(raw):
+        return False
+    if any(marker in raw for marker in _SITE_CANDIDATE_MARKERS):
+        return False
+    # 너무 길면 복합 의도로 보고 Supervisor에 위임 (짧은 단독 입력 위주)
+    if len(raw) > 40:
+        return False
+    return True
+
+
 def _is_status_or_source_query(user_text: str) -> bool:
     raw = (user_text or "").strip()
     if not raw:
@@ -682,7 +724,7 @@ def _is_status_or_source_query(user_text: str) -> bool:
         return True
     if any(marker.replace(" ", "") in normalized for marker in _SOURCE_QUERY_MARKERS):
         return True
-    if "면적" in raw and any(marker in raw for marker in ("왜", "출처", "기준", "어디서", "?")):
+    if "면적" in raw and any(marker in raw for marker in ("왜", "출처", "기준", "어디서")):
         return True
     if ("손도면" in raw or "스케치" in raw) and any(
         marker in raw for marker in ("면적", "출처", "기준", "생성")
@@ -752,7 +794,7 @@ def try_template_status_answer(state: Dict[str, Any]) -> Optional[str]:
 
     normalized = user_text.replace(" ", "")
     is_status = any(marker.replace(" ", "") in normalized for marker in _STATUS_QUERY_MARKERS)
-    is_source = not is_status or any(
+    is_source = any(
         marker.replace(" ", "") in normalized for marker in _SOURCE_QUERY_MARKERS
     ) or ("면적" in user_text and any(m in user_text for m in ("왜", "출처", "기준", "어디서")))
     is_sketch = ("손도면" in user_text or "스케치" in user_text) and any(
@@ -776,11 +818,14 @@ def try_template_status_answer(state: Dict[str, Any]) -> Optional[str]:
 
 
 def try_site_agent_precheck(state: Dict[str, Any]) -> Optional[str]:
-    """주소/지번 입력 → LLM 없이 site_agent."""
+    """짧은 주소/지번 단독 입력만 → LLM 없이 site_agent.
+
+    조건 기반 후보 탐색형 자연어는 Supervisor가 판단한다.
+    """
     user_text = _last_user_text(state)
     if not user_text.strip():
         return None
-    if _looks_like_site_address_input(user_text):
+    if _looks_like_short_address_query(user_text):
         return "site_agent"
     return None
 
@@ -833,6 +878,19 @@ def try_pending_flow_precheck(state: Dict[str, Any]) -> Optional[str]:
     user_text = _last_user_text(state)
     if not user_text.strip():
         return None
+
+    # manual_area_input 루프 중에도 '추천값' 전환은 허용 (직접 입력 루프 탈출).
+    # "다시/말고" 등 review 마커가 섞여도 추천 전환은 planning_agent가 처리.
+    # 단, 질문/출처 문의("추천값 출처가 뭐야?")는 전환이 아니라 설명 요청이므로 제외.
+    if (
+        pending == "manual_area_input"
+        and _parse_area_mode(user_text) == "recommend"
+        and not _has_reference_or_case_intent(user_text)
+        and not _is_status_or_source_query(user_text)
+        and "?" not in user_text
+    ):
+        return "planning_agent"
+
     if _is_flow_review_message(user_text):
         return None
 
@@ -897,6 +955,10 @@ Few-shot:
 - pending area_decision + "251.92 말고 25평 기준으로" -> extract_requirements
 - no pending + "왜 생성 기준 면적이 251.92야" -> general_answer
 - no pending + "역삼동 747 건폐율 조회해줘" -> site_agent
+- no pending + "강동구 천호동에 건축면적 30평 되는 주소 있을까?" -> site_agent
+- no pending + "부모님이 살만한 2층 주택이면 좋겠어" -> general_answer (vague wish, ask clarifying intent)
+- no pending + "다음에 침실 하나 더 추가해줘" -> extract_requirements
+- no pending + "천호동 28-29 같은 주택 사례 찾아줘" -> reference_agent
 - has payload + user confirms generation -> handoff_to_design
 """
 
