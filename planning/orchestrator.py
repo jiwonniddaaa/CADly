@@ -28,6 +28,7 @@ from planning.supervisor import (
     general_answer_system_prompt,
     pending_reminder,
     resolve_entry_route,
+    try_template_status_answer,
 )
 from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
@@ -129,6 +130,7 @@ class PlanningState(TypedDict, total=False):
     sketch_analysis: Optional[Dict[str, Any]]
     sketch_result: Optional[Dict[str, Any]]
     sketch_apply_ok: Optional[bool]
+    template_answer: Optional[str]
 
 # 유틸리티 함수
 def messages_to_text(messages: List[BaseMessage]) -> str:
@@ -251,6 +253,13 @@ def router_node(state: PlanningState) -> PlanningState:
             "image_path": extracted_image_path
         }
 
+    template = try_template_status_answer(state)
+    if template:
+        return {
+            "route": "general_answer",
+            "template_answer": template,
+        }
+
     route = resolve_entry_route(state, low_llm)
     return {"route": route}
 
@@ -307,7 +316,7 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
     return update
 
 def sketch_apply_node(state: PlanningState) -> PlanningState:
-    """손도면 extract 결과를 spaces/edges에 merge한 뒤 planning flow로 넘깁니다."""
+    """손도면 extract 결과를 spaces/edges에 반영한 뒤 planning flow로 넘깁니다."""
     sketch_result = state.get("sketch_result")
     if not isinstance(sketch_result, dict):
         return {
@@ -615,15 +624,18 @@ def handoff_to_design_node(state: PlanningState) -> PlanningState:
 
 def general_answer_node(state: PlanningState) -> PlanningState:
     """세션 state 기반 설명만 제공. planning state 필드는 변경하지 않음."""
-    user_query = _last_user_message_text(state)
-    session_context = build_session_context(state)
-    recent_messages = state.get("messages") or []
-    conversation = messages_to_text(recent_messages[-8:])
-    guidance = flow_guidance(state)
+    template = state.get("template_answer")
+    if template:
+        answer = template.strip()
+    else:
+        user_query = _last_user_message_text(state)
+        session_context = build_session_context(state)
+        recent_messages = state.get("messages") or []
+        conversation = messages_to_text(recent_messages[-8:])
 
-    response = high_llm.invoke([
-        SystemMessage(content=general_answer_system_prompt()),
-        HumanMessage(content=f"""
+        response = high_llm.invoke([
+            SystemMessage(content=general_answer_system_prompt()),
+            HumanMessage(content=f"""
 Recent conversation:
 {conversation}
 
@@ -633,12 +645,13 @@ Session state (JSON):
 User message:
 {user_query}
 """),
-    ])
+        ])
+        answer = (response.content or "").strip()
 
-    answer = (response.content or "").strip()
     reminder = pending_reminder(state)
     if reminder and reminder not in answer:
         answer = f"{answer}{reminder}"
+    guidance = flow_guidance(state)
     if guidance and guidance not in answer:
         answer = f"{answer}\n\n—\n{guidance}"
 

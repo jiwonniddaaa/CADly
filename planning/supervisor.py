@@ -364,6 +364,52 @@ def _last_assistant_excerpt(messages: List[BaseMessage], limit: int = 400) -> st
     return ""
 
 
+def _compact_spaces_summary(spaces: List[Any]) -> Dict[str, Any]:
+    return {
+        "count": len(spaces),
+        "room_types": [s.get("room_type") for s in spaces if isinstance(s, dict) and s.get("room_type")],
+        "ids": [s.get("id") for s in spaces if isinstance(s, dict) and s.get("id")],
+    }
+
+
+def build_supervisor_context(state: Dict[str, Any]) -> str:
+    """Supervisor 라우팅용 경량 context (spaces/edges 본문·raw site 제외)."""
+    site = _summarize_site_analysis(state.get("site_analysis"))
+    sketch = state.get("sketch_result")
+    pending = normalize_pending_action(state)
+    stage = derive_workflow_stage(state)
+    area = _derive_area_for_generation(state)
+    payload = state.get("design_payload")
+
+    site_key_values = None
+    if site.get("present"):
+        site_key_values = {
+            key: site[key]
+            for key in ("building_area_m2", "private_area_m2", "floor_area_m2", "site_area_m2")
+            if site.get(key) is not None
+        }
+
+    context = {
+        "workflow_stage": stage,
+        "pending_action": pending,
+        "has_design_payload": payload is not None,
+        "building_type": state.get("building_type"),
+        "output_name": state.get("output_name"),
+        "spaces_summary": _compact_spaces_summary(state.get("spaces") or []),
+        "edge_count": len(state.get("edges") or []),
+        "has_site_analysis": site.get("present", False),
+        "site_area_key_values": site_key_values,
+        "has_sketch_result": bool(isinstance(sketch, dict) and sketch.get("spaces")),
+        "area_for_generation": {
+            "value_m2": area.get("value_m2"),
+            "source_label": area.get("source_label"),
+        },
+        "ready_for_design": state.get("ready_for_design"),
+        "missing_requirements_count": len(state.get("missing_requirements") or []),
+    }
+    return json.dumps(context, ensure_ascii=False, indent=2)
+
+
 def build_session_context(state: Dict[str, Any]) -> str:
     pending = normalize_pending_action(state)
     payload_summary = _summarize_design_payload(state.get("design_payload"))
@@ -467,6 +513,69 @@ _AREA_INPUT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_ADDRESS_LOT_PATTERN = re.compile(
+    r"[가-힣0-9]{1,20}(?:동|가)\s*산?\s*\d{1,5}(?:\s*[-~]\s*\d{1,5})?\s*(?:번지)?"
+)
+
+_ADDRESS_ADMIN_PATTERN = re.compile(
+    r"[가-힣]+(?:시|군|구)\s+[가-힣0-9]{1,20}(?:동|가)\s*산?\s*\d"
+)
+
+_BUNJI_PATTERN = re.compile(r"\d{1,5}(?:-\d{1,5})?\s*번지")
+
+_REFERENCE_INTENT_MARKERS = (
+    "레퍼런스",
+    "reference",
+    "사례",
+    "예시",
+    "유사사례",
+    "건축사례",
+    "케이스",
+    "casestudy",
+    "case study",
+    "무드",
+    "mood",
+    "핀터레스트",
+    "pinterest",
+    "Archdaily",
+    "스타일",
+    "style",
+    "컨셉",
+    "concept",
+    "느낌",
+    "이미지",
+    "image",
+    "사진",
+)
+
+_STATUS_QUERY_MARKERS = (
+    "뭐 하는",
+    "뭐하는",
+    "지금 단계",
+    "현재 단계",
+    "어디까지",
+    "진행 상황",
+    "진행상황",
+    "뭐 해야",
+    "뭐해야",
+    "다음에",
+    "다음 단계",
+    "무슨 단계",
+    "지금 뭐",
+    "현재 뭐",
+)
+
+_SOURCE_QUERY_MARKERS = (
+    "출처",
+    "기준 면적",
+    "기준면적",
+    "생성 기준",
+    "생성기준",
+    "어디서",
+    "기준이",
+    "면적이 왜",
+)
+
 
 def _normalize_user_text(text: str) -> str:
     return (text or "").strip().lower().replace(" ", "")
@@ -505,6 +614,8 @@ def _looks_like_manual_area_input(user_text: str) -> bool:
     raw = (user_text or "").strip()
     if not raw or _is_flow_review_message(raw):
         return False
+    if _contains_address_pattern(raw):
+        return False
     if not _AREA_INPUT_PATTERN.search(raw):
         return False
     return bool(re.search(r"\d", raw))
@@ -522,6 +633,156 @@ def _is_clear_concept_flow_reply(user_text: str) -> bool:
     if _parse_yes_no(user_text) is not None:
         return True
     return any(token in normalized for token in _CONCEPT_CONFIRM_TOKENS)
+
+
+def _contains_address_pattern(user_text: str) -> bool:
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+    return bool(
+        _ADDRESS_LOT_PATTERN.search(raw)
+        or _ADDRESS_ADMIN_PATTERN.search(raw)
+        or _BUNJI_PATTERN.search(raw)
+    )
+
+
+def _has_reference_or_case_intent(user_text: str) -> bool:
+    """주소가 있어도 레퍼런스/사례 탐색이면 site_agent pre-check 제외."""
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+    normalized = _normalize_user_text(raw)
+    if any(marker.lower().replace(" ", "") in normalized for marker in _REFERENCE_INTENT_MARKERS):
+        return True
+    if "비슷한" in raw and any(token in raw for token in ("찾", "보", "검색", "레퍼", "사례", "예시")):
+        return True
+    return False
+
+
+def _looks_like_site_address_input(user_text: str) -> bool:
+    """신규 대지 분석 요청으로 보이는 주소/지번 입력."""
+    raw = (user_text or "").strip()
+    if not raw or len(raw) < 4:
+        return False
+    if _is_flow_review_message(raw):
+        return False
+    if _has_reference_or_case_intent(raw):
+        return False
+    if not _contains_address_pattern(raw):
+        return False
+    return True
+
+
+def _is_status_or_source_query(user_text: str) -> bool:
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+    normalized = raw.replace(" ", "")
+    if any(marker.replace(" ", "") in normalized for marker in _STATUS_QUERY_MARKERS):
+        return True
+    if any(marker.replace(" ", "") in normalized for marker in _SOURCE_QUERY_MARKERS):
+        return True
+    if "면적" in raw and any(marker in raw for marker in ("왜", "출처", "기준", "어디서", "?")):
+        return True
+    if ("손도면" in raw or "스케치" in raw) and any(
+        marker in raw for marker in ("면적", "출처", "기준", "생성")
+    ):
+        return True
+    return False
+
+
+def _format_area_source_section(state: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    area_info = _derive_area_for_generation(state)
+    site = _summarize_site_analysis(state.get("site_analysis"))
+    sketch = _summarize_sketch_result(state.get("sketch_result"))
+
+    lines.append("**도면 생성 기준 면적**")
+    if area_info.get("value_m2") is not None:
+        lines.append(f"- 값: **{area_info['value_m2']}㎡**")
+        label = area_info.get("source_label") or area_info.get("source") or "세션 기준"
+        lines.append(f"- 출처: {label}")
+        note = area_info.get("note")
+        if note:
+            lines.append(f"- 참고: {note}")
+    else:
+        note = area_info.get("note") or "아직 확정되지 않았습니다."
+        lines.append(f"- {note}")
+
+    if site.get("present"):
+        lines.append("")
+        lines.append("**대지 분석 (건축대장/마트 DB)** — site_agent 결과")
+        for key, label in (
+            ("building_area_m2", "건축면적"),
+            ("private_area_m2", "전용면적"),
+            ("floor_area_m2", "연면적(참고)"),
+        ):
+            if site.get(key) is not None:
+                lines.append(f"- {label}: {site[key]}㎡")
+
+    if sketch.get("present"):
+        lines.append("")
+        lines.append("**손도면 분석** — 레이아웃(공간·연결)만 제공")
+        lines.append("- 손도면은 diffusion_output·생성 기준 면적을 만들지 **않습니다**.")
+        lines.append(
+            f"- 인식 공간: {sketch.get('space_count', 0)}개, "
+            f"연결: {sketch.get('edge_count', 0)}개"
+        )
+    elif state.get("sketch_result") or state.get("image_type") == "hand_sketch":
+        lines.append("")
+        lines.append("**손도면** — 공간 배치만 추출하며, 생성 기준 면적 출처가 **아닙니다**.")
+
+    return "\n".join(lines)
+
+
+def try_template_status_answer(state: Dict[str, Any]) -> Optional[str]:
+    """단순 상태/출처/단계 질문 → LLM 없이 템플릿 응답."""
+    user_text = _last_user_text(state).strip()
+    if not user_text or not _is_status_or_source_query(user_text):
+        return None
+    if _looks_like_site_address_input(user_text):
+        return None
+    if _looks_like_manual_area_input(user_text):
+        return None
+
+    parts: List[str] = []
+    guidance = flow_guidance(state)
+    if guidance:
+        parts.append(guidance)
+
+    normalized = user_text.replace(" ", "")
+    is_status = any(marker.replace(" ", "") in normalized for marker in _STATUS_QUERY_MARKERS)
+    is_source = not is_status or any(
+        marker.replace(" ", "") in normalized for marker in _SOURCE_QUERY_MARKERS
+    ) or ("면적" in user_text and any(m in user_text for m in ("왜", "출처", "기준", "어디서")))
+    is_sketch = ("손도면" in user_text or "스케치" in user_text) and any(
+        m in user_text for m in ("면적", "출처", "기준", "생성")
+    )
+
+    if is_status:
+        pending = normalize_pending_action(state)
+        if pending != "none":
+            parts.append(f"\n**대기 중인 입력**: {_PENDING_LABELS.get(pending, pending)}")
+        reminder = pending_reminder(state).strip()
+        if reminder:
+            parts.append(reminder)
+
+    if is_source or is_sketch or "출처" in user_text or "기준" in user_text:
+        parts.append("")
+        parts.append(_format_area_source_section(state))
+
+    answer = "\n".join(part for part in parts if part).strip()
+    return answer or None
+
+
+def try_site_agent_precheck(state: Dict[str, Any]) -> Optional[str]:
+    """주소/지번 입력 → LLM 없이 site_agent."""
+    user_text = _last_user_text(state)
+    if not user_text.strip():
+        return None
+    if _looks_like_site_address_input(user_text):
+        return "site_agent"
+    return None
 
 
 def is_awaiting_design_handoff_confirmation(state: Dict[str, Any]) -> bool:
@@ -592,7 +853,11 @@ def resolve_entry_route(
     llm: BaseChatModel,
 ) -> str:
     """deterministic pre-check 후 Supervisor LLM으로 진입 route 결정."""
-    for precheck in (try_handoff_to_design_precheck, try_pending_flow_precheck):
+    for precheck in (
+        try_handoff_to_design_precheck,
+        try_pending_flow_precheck,
+        try_site_agent_precheck,
+    ):
         route = precheck(state)
         if route:
             return route
@@ -606,7 +871,7 @@ def resolve_supervisor_route(
     """Supervisor: 세션 상태 + pending + 사용자 의도를 보고 route 결정."""
     messages = state.get("messages") or []
     conversation = _messages_to_text(messages[-10:])
-    session_context = build_session_context(state)
+    session_context = build_supervisor_context(state)
     pending = normalize_pending_action(state)
     flow_route = _PENDING_FLOW_ROUTES.get(pending)
 
