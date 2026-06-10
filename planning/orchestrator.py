@@ -24,6 +24,8 @@ from planning.pending_state import (
 from planning.planning_agent import PlanningAgent
 from planning.supervisor import (
     build_session_context,
+    flow_guidance,
+    general_answer_system_prompt,
     pending_reminder,
     resolve_entry_route,
 )
@@ -126,6 +128,7 @@ class PlanningState(TypedDict, total=False):
     image_classification: Optional[Dict[str, Any]]
     sketch_analysis: Optional[Dict[str, Any]]
     sketch_result: Optional[Dict[str, Any]]
+    sketch_apply_ok: Optional[bool]
 
 # 유틸리티 함수
 def messages_to_text(messages: List[BaseMessage]) -> str:
@@ -302,6 +305,52 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         )
 
     return update
+
+def sketch_apply_node(state: PlanningState) -> PlanningState:
+    """손도면 extract 결과를 spaces/edges에 merge한 뒤 planning flow로 넘깁니다."""
+    sketch_result = state.get("sketch_result")
+    if not isinstance(sketch_result, dict):
+        return {
+            "sketch_apply_ok": False,
+            "messages": [
+                AIMessage(
+                    content=(
+                        "손도면에서 공간 정보를 추출하지 못했습니다. "
+                        "다른 이미지로 다시 시도하거나 공간 구성을 텍스트로 알려 주세요."
+                    )
+                )
+            ],
+        }
+
+    spaces = sketch_result.get("spaces") or []
+    if not spaces:
+        return {
+            "sketch_apply_ok": False,
+            "messages": [
+                AIMessage(
+                    content=(
+                        "손도면에서 인식된 공간이 없습니다. "
+                        "공간 이름이 보이는 스케치를 업로드하거나, "
+                        "예) 거실, 주방, 침실 2개 구성으로 알려 주세요."
+                    )
+                )
+            ],
+        }
+
+    update: PlanningState = {
+        "sketch_apply_ok": True,
+        "spaces": spaces,
+        "edges": sketch_result.get("edges") or state.get("edges") or [],
+        "sketch_result": sketch_result,
+        "image_type": state.get("image_type") or "hand_sketch",
+    }
+    if sketch_result.get("output_name"):
+        update["output_name"] = sketch_result["output_name"]
+    if sketch_result.get("building_type"):
+        update["building_type"] = sketch_result["building_type"]
+
+    return update
+
 
 async def site_agent_node(state: PlanningState) -> PlanningState:
     user_query = state["messages"][-1].content
@@ -570,21 +619,10 @@ def general_answer_node(state: PlanningState) -> PlanningState:
     session_context = build_session_context(state)
     recent_messages = state.get("messages") or []
     conversation = messages_to_text(recent_messages[-8:])
+    guidance = flow_guidance(state)
 
     response = high_llm.invoke([
-        SystemMessage(content="""
-You are CADly, an AI architectural planning and design assistant.
-
-Answer using the provided session state and conversation when relevant.
-Always respond in natural Korean.
-
-Guidelines:
-- Explain workflow stage, pending steps, site analysis, areas, and design payload clearly.
-- If generation area differs from what the user said, explain where the value came from.
-- Do not pretend to have changed the plan or executed agents in this turn.
-- Be concise but complete. Use bullet lists when comparing values.
-- For casual questions without session relevance, answer naturally as CADly.
-"""),
+        SystemMessage(content=general_answer_system_prompt()),
         HumanMessage(content=f"""
 Recent conversation:
 {conversation}
@@ -601,6 +639,8 @@ User message:
     reminder = pending_reminder(state)
     if reminder and reminder not in answer:
         answer = f"{answer}{reminder}"
+    if guidance and guidance not in answer:
+        answer = f"{answer}\n\n—\n{guidance}"
 
     return {
         "messages": [AIMessage(content=answer)],
@@ -612,6 +652,12 @@ def route_after_router(state: PlanningState) -> str:
 
 def route_after_image_understanding(state: PlanningState) -> str:
     return state.get("route", "general_answer")
+
+def route_after_sketch_apply(state: PlanningState) -> str:
+    if state.get("sketch_apply_ok"):
+        return "planning_agent"
+    return "end"
+
 
 def route_after_planning_agent(state: PlanningState) -> str:
     if is_pending(state, "area_decision", "area_mode"):
@@ -632,8 +678,9 @@ def build_planning_orchestrator():
     graph.add_node("router", router_node)
     graph.add_node("image_understanding", image_understanding_node)
     
-    graph.add_node("sketch_analysis_node", sketch_agent_instance.analysis_node)          
-    graph.add_node("sketch_extract_node", sketch_agent_instance.extract_node)    
+    graph.add_node("sketch_analysis_node", sketch_agent_instance.analysis_node)
+    graph.add_node("sketch_extract_node", sketch_agent_instance.extract_node)
+    graph.add_node("sketch_apply_node", sketch_apply_node)
     graph.add_node("reference_agent", reference_agent_node)
     graph.add_node("site_agent", site_agent_node)
     graph.add_node("extract_requirements", extract_requirements_node)
@@ -670,9 +717,17 @@ def build_planning_orchestrator():
         }
     )
 
-    # 손도면 흐름 연결 후 한 턴 대기종료
+    # 손도면: extract → spaces/edges merge → planning 검증
     graph.add_edge("sketch_analysis_node", "sketch_extract_node")
-    graph.add_edge("sketch_extract_node", END)
+    graph.add_edge("sketch_extract_node", "sketch_apply_node")
+    graph.add_conditional_edges(
+        "sketch_apply_node",
+        route_after_sketch_apply,
+        {
+            "planning_agent": "planning_agent",
+            "end": END,
+        },
+    )
 
     graph.add_edge("reference_agent", END)
     graph.add_edge("site_agent", END)

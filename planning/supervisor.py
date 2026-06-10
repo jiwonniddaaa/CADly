@@ -1,7 +1,9 @@
+# planning/supervisor.py
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -18,6 +20,18 @@ VALID_SUPERVISOR_ROUTES = frozenset(
         "general_answer",
     }
 )
+
+WorkflowStage = Literal[
+    "awaiting_concept_confirmation",
+    "awaiting_area_decision",
+    "awaiting_area_mode",
+    "awaiting_manual_area",
+    "awaiting_design_confirm",
+    "needs_site_analysis",
+    "needs_requirements",
+    "ready_for_planning_check",
+    "idle",
+]
 
 _PENDING_FLOW_ROUTES: Dict[PendingAction, str] = {
     "manual_area_input": "extract_requirements",
@@ -52,6 +66,41 @@ _PENDING_REMINDERS: Dict[PendingAction, str] = {
         "\n\n—\n"
         "계속 진행하려면: 컨셉/레퍼런스 방향을 확인하거나 수정 요청을 입력해 주세요."
     ),
+}
+
+_WORKFLOW_GUIDANCE: Dict[WorkflowStage, str] = {
+    "awaiting_concept_confirmation": (
+        "현재 단계: **컨셉/레퍼런스 확인**. 방향을 확정하거나 수정 요청을 입력해 주세요."
+    ),
+    "awaiting_area_decision": (
+        "현재 단계: **세부 면적 설정 여부 확인**. "
+        "구체적인 면적을 설정할지 **네/아니오**로 답해 주세요."
+    ),
+    "awaiting_area_mode": (
+        "현재 단계: **면적 입력 방식 선택**. "
+        "**직접 입력** 또는 **추천값** 중 하나로 답해 주세요."
+    ),
+    "awaiting_manual_area": (
+        "현재 단계: **공간별 면적 입력**. "
+        "예) 거실 24, 주방 12, 침실1 14"
+    ),
+    "awaiting_design_confirm": (
+        "현재 단계: **도면 생성 최종 확인**. "
+        "조건을 검토한 뒤 생성을 원하시면 **네/생성해줘** 등으로 답해 주세요."
+    ),
+    "needs_site_analysis": (
+        "현재 단계: **대지 분석 필요**. "
+        "분석할 주소/지번을 입력해 주세요. (예: 역삼동 747)"
+    ),
+    "needs_requirements": (
+        "현재 단계: **요구사항 정리 필요**. "
+        "공간 구성, 파일명, 건물 유형(단독/공동) 등을 알려 주세요."
+    ),
+    "ready_for_planning_check": (
+        "현재 단계: **기획 검증/면적 설정**. "
+        "요구사항이 모이면 세부 면적 설정 또는 도면 생성 조건 확인으로 이어집니다."
+    ),
+    "idle": "",
 }
 
 _SUPERVISOR_SYSTEM = """
@@ -96,6 +145,31 @@ CRITICAL RULES (Supervisor behavior):
 - Return ONLY JSON: {"route": "..."}
 """
 
+_GENERAL_ANSWER_SYSTEM = """
+You are CADly, an AI architectural planning and design assistant.
+
+This turn is READ-ONLY Q&A. You must NOT claim to have executed agents, changed state, started/completed design generation, or updated the plan.
+
+Answer using the provided session state and conversation when relevant.
+Always respond in natural Korean.
+
+SOURCE RULES (critical — never violate):
+- site_analysis.diffusion_output / site_analysis_summary comes ONLY from site_agent (building registry / mart DB).
+- hand sketch / sketch_result provides layout only (spaces, edges). It does NOT produce diffusion_output or generation area.
+- Never say sketch analysis wrote diffusion_output or building_area_m2/private_area_m2.
+- area_for_generation.value_m2 and its source_label in session JSON are authoritative for "도면 생성 기준 면적".
+- floor_area_m2 (연면적) in site_analysis is informational; generation uses building_area_m2 or private_area_m2 per building_type.
+
+EXECUTION PROHIBITION:
+- Do not say you started, completed, or will run design generation, site analysis, or requirement extraction in this turn.
+- Direct the user what to say/do next using workflow_stage and flow_guidance instead.
+
+Guidelines:
+- Explain workflow stage, pending steps, and area provenance clearly.
+- Be concise. Use bullet lists when comparing values.
+- For casual questions without session relevance, answer naturally as CADly.
+"""
+
 
 def _safe_json_loads(text: str) -> dict:
     try:
@@ -115,6 +189,14 @@ def _messages_to_text(messages: List[BaseMessage]) -> str:
     return "\n".join(lines)
 
 
+def _last_user_text(state: Dict[str, Any]) -> str:
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    content = messages[-1].content
+    return content if isinstance(content, str) else str(content or "")
+
+
 def _summarize_design_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -130,17 +212,146 @@ def _summarize_design_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, An
 
 def _summarize_site_analysis(site_analysis: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(site_analysis, dict):
-        return {}
+        return {
+            "present": False,
+            "source": "site_agent_building_registry",
+            "source_label": "대지 분석 (건축대장/마트 DB)",
+        }
     raw = site_analysis.get("raw_site_output") or {}
     diffusion = site_analysis.get("diffusion_output") or raw.get("diffusion_output") or {}
     identifiers = raw.get("building_identifiers") or {}
     return {
+        "present": True,
+        "source": "site_agent_building_registry",
+        "source_label": "대지 분석 (건축대장/마트 DB)",
+        "provides": [
+            "diffusion_output",
+            "building_area_m2",
+            "private_area_m2",
+            "floor_area_m2",
+            "common_area_m2",
+        ],
+        "does_not_come_from": "hand_sketch",
         "diffusion_output": diffusion,
         "building_identifiers": identifiers,
         "site_area_m2": diffusion.get("site_area_m2"),
         "building_area_m2": diffusion.get("building_area_m2"),
+        "floor_area_m2": diffusion.get("floor_area_m2"),
         "private_area_m2": diffusion.get("private_area_m2"),
+        "common_area_m2": diffusion.get("common_area_m2"),
     }
+
+
+def _summarize_sketch_result(sketch_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(sketch_result, dict) or not sketch_result.get("spaces"):
+        return {
+            "present": False,
+            "source": "hand_sketch_extract",
+            "source_label": "손도면 분석 (레이아웃 추출)",
+        }
+    return {
+        "present": True,
+        "source": "hand_sketch_extract",
+        "source_label": "손도면 분석 (레이아웃 추출)",
+        "provides": ["spaces", "edges", "output_name", "building_type"],
+        "does_not_provide": [
+            "diffusion_output",
+            "generation_area_m2",
+            "building_area_m2",
+            "private_area_m2",
+        ],
+        "space_count": len(sketch_result.get("spaces") or []),
+        "edge_count": len(sketch_result.get("edges") or []),
+        "spaces": sketch_result.get("spaces"),
+        "edges": sketch_result.get("edges"),
+    }
+
+
+def _derive_area_for_generation(state: Dict[str, Any]) -> Dict[str, Any]:
+    building_type = state.get("building_type")
+    payload = state.get("design_payload")
+    if isinstance(payload, dict):
+        gen_ctx = payload.get("generation_context") or {}
+        value = gen_ctx.get("area_m2")
+        if value is not None:
+            field = (
+                "private_area_m2"
+                if building_type == "multi_family"
+                else "building_area_m2"
+            )
+            return {
+                "value_m2": value,
+                "field": field,
+                "source": "design_payload.generation_context",
+                "source_label": "도면 생성 payload (확정)",
+            }
+
+    site = _summarize_site_analysis(state.get("site_analysis"))
+    diffusion = site.get("diffusion_output") or {}
+    if building_type == "multi_family":
+        value = diffusion.get("private_area_m2")
+        field = "private_area_m2"
+        label = "대지 분석 — 전용면적 (건축대장)"
+    elif building_type == "single_family":
+        value = diffusion.get("building_area_m2")
+        field = "building_area_m2"
+        label = "대지 분석 — 건축면적 (건축대장)"
+    else:
+        return {
+            "value_m2": None,
+            "field": None,
+            "source": None,
+            "source_label": None,
+            "note": "building_type 미설정 시 생성 기준 면적을 특정할 수 없습니다.",
+        }
+
+    if value is None:
+        return {
+            "value_m2": None,
+            "field": field,
+            "source": "site_analysis.diffusion_output",
+            "source_label": label,
+            "note": "대지 분석 후 planning 검증을 거쳐 payload에 반영됩니다.",
+        }
+
+    return {
+        "value_m2": value,
+        "field": field,
+        "source": "site_analysis.diffusion_output",
+        "source_label": label,
+        "note": "연면적(floor_area_m2)이 아닌 위 필드가 도면 생성 기준으로 사용됩니다.",
+    }
+
+
+def derive_workflow_stage(state: Dict[str, Any]) -> WorkflowStage:
+    """state에 저장하지 않고 매 턴 파생 계산."""
+    pending = normalize_pending_action(state)
+    if pending == "concept_confirmation":
+        return "awaiting_concept_confirmation"
+    if pending == "area_decision":
+        return "awaiting_area_decision"
+    if pending == "area_mode":
+        return "awaiting_area_mode"
+    if pending == "manual_area_input":
+        return "awaiting_manual_area"
+
+    if state.get("design_payload") is not None or is_awaiting_design_handoff_confirmation(state):
+        return "awaiting_design_confirm"
+
+    spaces = state.get("spaces") or []
+    if not spaces:
+        return "needs_requirements"
+    if not state.get("output_name") or not state.get("building_type"):
+        return "needs_requirements"
+    if not state.get("site_analysis"):
+        return "needs_site_analysis"
+
+    return "ready_for_planning_check"
+
+
+def flow_guidance(state: Dict[str, Any]) -> str:
+    stage = derive_workflow_stage(state)
+    return _WORKFLOW_GUIDANCE.get(stage, "")
 
 
 def _last_assistant_excerpt(messages: List[BaseMessage], limit: int = 400) -> str:
@@ -157,8 +368,12 @@ def build_session_context(state: Dict[str, Any]) -> str:
     pending = normalize_pending_action(state)
     payload_summary = _summarize_design_payload(state.get("design_payload"))
     area_reco = state.get("area_recommendation_result") or {}
+    stage = derive_workflow_stage(state)
 
     context = {
+        "workflow_stage": stage,
+        "workflow_stage_label": _WORKFLOW_GUIDANCE.get(stage, ""),
+        "flow_guidance": flow_guidance(state),
         "pending_action": pending,
         "pending_label": _PENDING_LABELS.get(pending, pending),
         "pending_flow_route_if_continue": _PENDING_FLOW_ROUTES.get(pending),
@@ -172,6 +387,8 @@ def build_session_context(state: Dict[str, Any]) -> str:
         "has_design_payload": state.get("design_payload") is not None,
         "design_payload_summary": payload_summary,
         "site_analysis_summary": _summarize_site_analysis(state.get("site_analysis")),
+        "sketch_result_summary": _summarize_sketch_result(state.get("sketch_result")),
+        "area_for_generation": _derive_area_for_generation(state),
         "area_recommendation_status": area_reco.get("status"),
         "area_recommendation_total_m2": area_reco.get("total_area_m2"),
         "area_recommendation_source": area_reco.get("area_source"),
@@ -209,9 +426,102 @@ _HANDOFF_CONFIRM_TOKENS = (
     "시작",
 )
 
+_FLOW_REVIEW_MARKERS = (
+    "왜",
+    "이상",
+    "말고",
+    "다시",
+    "?",
+    "몰라",
+    "확인해",
+    "설명",
+    "어디서",
+    "출처",
+    "기준",
+)
+
+_CONCEPT_MODIFY_MARKERS = (
+    "바꿔",
+    "수정",
+    "다른",
+    "말고",
+    "대신",
+    "다시",
+    "말해",
+    "보여",
+)
+
+_CONCEPT_CONFIRM_TOKENS = (
+    "확인",
+    "좋아",
+    "진행",
+    "그래",
+    "맞아",
+    "ok",
+    "승인",
+)
+
+_AREA_INPUT_PATTERN = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:㎡|m2|m²|평)?|"
+    r"(거실|주방|부엌|침실|화장실|욕실|현관|발코니|베란다|다이닝|서재|창고)",
+    re.IGNORECASE,
+)
+
 
 def _normalize_user_text(text: str) -> str:
     return (text or "").strip().lower().replace(" ", "")
+
+
+def _is_flow_review_message(user_text: str) -> bool:
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+    return any(marker in raw for marker in _FLOW_REVIEW_MARKERS)
+
+
+def _parse_yes_no(user_text: str) -> Optional[Literal["yes", "no"]]:
+    normalized = (user_text or "").lower()
+    yes_tokens = ["네", "예", "응", "ㅇㅇ", "yes", "y"]
+    no_tokens = ["아니", "아니오", "no", "n", "괜찮", "필요없"]
+    if any(token in normalized for token in [t.lower() for t in yes_tokens]):
+        return "yes"
+    if any(token in normalized for token in [t.lower() for t in no_tokens]):
+        return "no"
+    return None
+
+
+def _parse_area_mode(user_text: str) -> Optional[Literal["manual", "recommend"]]:
+    normalized = (user_text or "").lower().replace(" ", "")
+    manual_tokens = ["직접입력", "수동입력", "직접", "manual"]
+    recommend_tokens = ["추천값", "추천", "기본값", "recommend"]
+    if any(token in normalized for token in manual_tokens):
+        return "manual"
+    if any(token in normalized for token in recommend_tokens):
+        return "recommend"
+    return None
+
+
+def _looks_like_manual_area_input(user_text: str) -> bool:
+    raw = (user_text or "").strip()
+    if not raw or _is_flow_review_message(raw):
+        return False
+    if not _AREA_INPUT_PATTERN.search(raw):
+        return False
+    return bool(re.search(r"\d", raw))
+
+
+def _is_clear_concept_flow_reply(user_text: str) -> bool:
+    """컨셉 확인 pending: 명시적 승인만 pre-check. 수정/탐색 요청은 Supervisor에 맡김."""
+    raw = (user_text or "").strip()
+    if not raw or _is_flow_review_message(raw):
+        return False
+    if any(marker in raw for marker in _CONCEPT_MODIFY_MARKERS):
+        return False
+
+    normalized = _normalize_user_text(raw)
+    if _parse_yes_no(user_text) is not None:
+        return True
+    return any(token in normalized for token in _CONCEPT_CONFIRM_TOKENS)
 
 
 def is_awaiting_design_handoff_confirmation(state: Dict[str, Any]) -> bool:
@@ -230,8 +540,7 @@ def is_clear_handoff_confirmation(user_text: str) -> bool:
     if any(token in normalized for token in _HANDOFF_DENIAL_TOKENS):
         return False
 
-    review_markers = ("왜", "이상", "말고", "다시", "?", "몰라", "확인해", "설명")
-    if len(raw) > 20 and any(marker in raw for marker in review_markers):
+    if _is_flow_review_message(raw):
         return False
 
     if any(token in normalized for token in _HANDOFF_CONFIRM_TOKENS):
@@ -246,10 +555,7 @@ def try_handoff_to_design_precheck(state: Dict[str, Any]) -> Optional[str]:
     if not messages:
         return None
 
-    user_text = messages[-1].content
-    if not isinstance(user_text, str):
-        user_text = str(user_text or "")
-
+    user_text = _last_user_text(state)
     if not is_awaiting_design_handoff_confirmation(state):
         return None
     if not is_clear_handoff_confirmation(user_text):
@@ -257,14 +563,39 @@ def try_handoff_to_design_precheck(state: Dict[str, Any]) -> Optional[str]:
     return "handoff_to_design"
 
 
+def try_pending_flow_precheck(state: Dict[str, Any]) -> Optional[str]:
+    """pending + 명확한 flow 답변만 deterministic 라우팅. 질문/검토는 Supervisor에 맡김."""
+    pending = normalize_pending_action(state)
+    if pending == "none":
+        return None
+
+    user_text = _last_user_text(state)
+    if not user_text.strip():
+        return None
+    if _is_flow_review_message(user_text):
+        return None
+
+    if pending == "area_decision" and _parse_yes_no(user_text) is not None:
+        return "planning_agent"
+    if pending == "area_mode" and _parse_area_mode(user_text) is not None:
+        return "planning_agent"
+    if pending == "manual_area_input" and _looks_like_manual_area_input(user_text):
+        return "extract_requirements"
+    if pending == "concept_confirmation" and _is_clear_concept_flow_reply(user_text):
+        return "reference_agent"
+
+    return None
+
+
 def resolve_entry_route(
     state: Dict[str, Any],
     llm: BaseChatModel,
 ) -> str:
     """deterministic pre-check 후 Supervisor LLM으로 진입 route 결정."""
-    precheck_route = try_handoff_to_design_precheck(state)
-    if precheck_route:
-        return precheck_route
+    for precheck in (try_handoff_to_design_precheck, try_pending_flow_precheck):
+        route = precheck(state)
+        if route:
+            return route
     return resolve_supervisor_route(state, llm)
 
 
@@ -292,6 +623,7 @@ Latest user message:
 Hints:
 - has_design_payload = {state.get("design_payload") is not None}
 - pending_action = {pending!r}
+- workflow_stage = {derive_workflow_stage(state)!r}
 - if user continues pending flow only, typical route = {flow_route!r}
 
 Few-shot:
@@ -319,3 +651,7 @@ Few-shot:
     if route not in VALID_SUPERVISOR_ROUTES:
         return "general_answer"
     return route
+
+
+def general_answer_system_prompt() -> str:
+    return _GENERAL_ANSWER_SYSTEM

@@ -16,6 +16,7 @@ EPHEMERAL_STATE_KEYS = frozenset(
         "image_base64",
         "image_media_type",
         "user_input",
+        "sketch_apply_ok",
     }
 )
 
