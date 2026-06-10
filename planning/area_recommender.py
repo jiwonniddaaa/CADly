@@ -23,7 +23,7 @@ ROOM_AREA_TABLE: Dict[str, Tuple[float, float, float]] = {
     "entrance": (2.5, 4.0, 7.0),
     "storage": (2.0, 4.0, 8.0),
     "dining_room": (6.0, 10.0, 16.0),
-    "study": (6.0, 9.0, 14.0),
+    "study_room": (6.0, 9.0, 14.0),
     "balcony": (2.0, 4.0, 8.0),
     "corridor": (2.0, 4.0, 8.0),
     "utility_room": (2.0, 4.0, 8.0),
