@@ -42,6 +42,10 @@ BUILDING_TYPE_AREA_FACTOR: Dict[str, float] = {
     "multi_family": 0.9,
 }
 
+# 입력 면적이 공간 유형별 표준 최대치의 이 배수를 초과하면 비정상 입력으로 간주한다.
+# (예: 욕실 8㎡ × 3.0 = 24㎡ 초과 입력은 오타 가능성이 높다고 판단)
+ABNORMAL_AREA_MULTIPLIER = 3.0
+
 
 # ------------------------------------------------------------
 # 유틸 함수
@@ -70,6 +74,32 @@ def _program_area_bounds(
     rec_sum = _sum_room_area(spaces, _AREA_REC_IDX) * factor
     max_sum = _sum_room_area(spaces, _AREA_MAX_IDX) * factor
     return round(min_sum, 1), round(rec_sum, 1), round(max_sum, 1)
+
+
+def _detect_abnormal_inputs(spaces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    입력 면적이 공간 유형별 표준 최대치(ROOM_AREA_TABLE max)의
+    ABNORMAL_AREA_MULTIPLIER 배를 초과하면 비정상 입력 후보로 반환한다.
+    오타(예: 4500㎡)나 단위 혼동을 추천 진행 전에 걸러내기 위함이다.
+    """
+    abnormal: List[Dict[str, Any]] = []
+    for space in spaces:
+        area = space.get("area")
+        if isinstance(area, (int, float)) and area > 0:
+            room_type = space.get("room_type", "unknown")
+            room_max = _room_area_bounds(room_type)[_AREA_MAX_IDX]
+            threshold = room_max * ABNORMAL_AREA_MULTIPLIER
+            if float(area) > threshold:
+                abnormal.append(
+                    {
+                        "id": space.get("id"),
+                        "room_type": room_type,
+                        "area": float(area),
+                        "typical_max_m2": room_max,
+                        "threshold_m2": round(threshold, 1),
+                    }
+                )
+    return abnormal
 
 def _clamp(value: float, min_value: float, max_value: float) -> float:
     """
@@ -282,13 +312,15 @@ def _infer_total_area(
     spaces: List[Dict[str, Any]],
     building_type: Optional[str],
     site_analysis: Optional[Dict[str, Any]],
+    weights: Dict[str, float],
 ) -> Tuple[float, str]:
     """
     추천 총면적을 추정한다.
 
     우선순위:
     1. Site Agent 분석 결과에 면적 정보가 있으면 해당 값을 우선 사용
-    2. 사용자가 각 공간의 면적을 입력했다면 그 합계에 여유분 15%를 반영
+    2. 사용자가 일부 공간 면적을 입력했다면, 입력 공간이 전체에서 차지하는
+       예상 비중(가중치 비율)을 역산해 총면적을 추정
     3. 정보가 부족하면 공간 유형별 권장 면적(ROOM_AREA_TABLE) 합으로 추정
 
     반환:
@@ -305,15 +337,42 @@ def _infer_total_area(
     if building_type == "multi_family" and context.get("private_area_m2"):
         return float(context["private_area_m2"]), "site_analysis_private_area"
 
-    # 사용자가 일부 공간 면적을 직접 지정한 경우, 합계에 15% 여유면적을 더함
-    specified_sum = 0.0
-    for space in spaces:
-        area = space.get("area")
-        if isinstance(area, (int, float)) and area > 0:
-            specified_sum += float(area)
+    # 사용자가 일부 공간 면적을 직접 입력한 경우: 가중치 비율 역산으로 총면적을 추정한다.
+    # 입력 공간이 전체에서 차지하는 예상 비중으로 나눈다.
+    specified_spaces = [
+        space for space in spaces
+        if isinstance(space.get("area"), (int, float)) and space["area"] > 0
+    ]
+    specified_sum = sum(float(space["area"]) for space in specified_spaces)
 
     if specified_sum > 0:
-        return round(specified_sum * 1.15, 1), "user_specified_area_sum"
+        input_weight = sum(
+            weights.get(space.get("room_type", "unknown"), 0.8)
+            for space in specified_spaces
+        )
+        total_weight = sum(
+            weights.get(space.get("room_type", "unknown"), 0.8) for space in spaces
+        )
+
+        if input_weight > 0 and total_weight > 0:
+            input_ratio = input_weight / total_weight
+            estimated_total = specified_sum / input_ratio
+        else:
+            estimated_total = specified_sum
+
+        # 입력 공간은 실제 입력값으로 고정하고, 빈 공간만 테이블 기준으로 범위를 잡는다.
+        # (전체 테이블 max 합으로 상한을 잡으면, 큰 값을 입력했을 때 부당하게 잘린다.)
+        empty_spaces = [
+            space for space in spaces
+            if not (isinstance(space.get("area"), (int, float)) and space["area"] > 0)
+        ]
+        factor = BUILDING_TYPE_AREA_FACTOR.get(building_type or "", 1.0)
+        empty_min = _sum_room_area(empty_spaces, _AREA_MIN_IDX) * factor
+        empty_max = _sum_room_area(empty_spaces, _AREA_MAX_IDX) * factor
+        lower = specified_sum + empty_min
+        upper = specified_sum + empty_max
+        estimated_total = _clamp(estimated_total, lower, upper)
+        return round(estimated_total, 1), "user_specified_weighted_backcalc"
 
     # 면적 정보가 없는 경우, 공간 구성(프로그램)별 권장 면적의 합으로 추정한다.
     # 실 개수만 보던 기존 휴리스틱과 달리 공간 유형(침실/욕실 등)을 반영한다.
@@ -400,10 +459,15 @@ def recommend_area_plan(
     spaces: List[Dict[str, Any]],
     building_type: Optional[str],
     site_analysis: Optional[Dict[str, Any]],
+    allow_abnormal: bool = False,
 ) -> Dict[str, Any]:
     """
     사용자 입력 공간 목록, 건물 유형, 대지 분석 결과를 바탕으로
     추천 총면적과 공간별 권장 면적을 계산한다.
+
+    allow_abnormal:
+        True이면 비정상 입력 sanity check를 건너뛴다.
+        (사용자가 큰 입력값을 확인/승인한 뒤 재진행할 때 사용)
 
     최종 반환값:
     - status
@@ -423,23 +487,29 @@ def recommend_area_plan(
             "message": "면적 추천을 위해 최소 1개 이상의 실내 공간 정보가 필요합니다.",
         }
 
+    # 비정상 입력(오타/단위 혼동 등)이 있으면 추천을 진행하지 않고 확인을 요청한다.
+    # 단, 사용자가 이미 확인했다면(allow_abnormal) 입력값을 그대로 신뢰한다.
+    abnormal_inputs = [] if allow_abnormal else _detect_abnormal_inputs(usable_spaces)
+    if abnormal_inputs:
+        detail_lines = "\n".join(
+            f"- {item['room_type']}: 입력 {item['area']}㎡ "
+            f"(일반적 최대 약 {item['typical_max_m2']}㎡)"
+            for item in abnormal_inputs
+        )
+        return {
+            "status": "needs_confirmation",
+            "abnormal_inputs": abnormal_inputs,
+            "message": (
+                "입력하신 면적 중 일반적인 범위를 크게 벗어난 값이 있어 확인이 필요합니다.\n"
+                f"{detail_lines}\n\n"
+                "값이 맞다면 다시 알려주시고, 오기입이라면 수정해 주세요."
+            ),
+        }
+
     # 대지 분석 결과에서 면적/법규 정보를 추출함
     context = _extract_site_context(site_analysis)
 
-    # 추천 총면적을 추정하고, 추정 기준 source를 함께 받음
-    total_area_m2, source = _infer_total_area(
-        usable_spaces,
-        building_type,
-        site_analysis
-    )
-
-    # 대지면적/건폐율/용적률 기반으로 추천 총면적을 보정함
-    total_area_m2, cap_notes = _regulatory_cap(
-        total_area_m2,
-        context,
-        building_type
-    )
-
+    # 가중치는 총면적 추정(가중치 역산)에도 쓰이므로 먼저 계산한다.
     # bedroom 개수를 기준으로 가구 유형을 추정함
     household = _household_profile(usable_spaces)
 
@@ -448,6 +518,21 @@ def recommend_area_plan(
 
     # 용도지역/주용도 정보를 반영해 공간별 가중치를 보정함
     _apply_zone_and_purpose_adjustments(weights, context)
+
+    # 추천 총면적을 추정하고, 추정 기준 source를 함께 받음 (가중치 역산 포함)
+    total_area_m2, source = _infer_total_area(
+        usable_spaces,
+        building_type,
+        site_analysis,
+        weights,
+    )
+
+    # 대지면적/건폐율/용적률 기반으로 추천 총면적을 보정함
+    total_area_m2, cap_notes = _regulatory_cap(
+        total_area_m2,
+        context,
+        building_type
+    )
 
     # 면적이 이미 입력된 공간과 비어 있는 공간을 분리한다.
     # 입력값은 그대로 보존하고, 잔여 면적(remaining)을 빈 공간끼리만 배분한다.
@@ -550,8 +635,8 @@ def recommend_area_plan(
     # 추천 총면적을 어떤 기준으로 산정했는지 설명
     if source.startswith("site_analysis"):
         assumptions.append("대지 분석 결과의 면적 값을 우선 기준으로 사용했습니다.")
-    elif source == "user_specified_area_sum":
-        assumptions.append("사용자가 지정한 공간 면적 합계를 기준으로 공용/여유 면적을 반영했습니다.")
+    elif source == "user_specified_weighted_backcalc":
+        assumptions.append("입력한 공간 면적이 전체에서 차지하는 예상 비중을 역산해 총면적을 추정했습니다.")
     else:
         assumptions.append("현재 정보가 제한되어 공간 유형별 권장 면적의 합으로 추정했습니다.")
 

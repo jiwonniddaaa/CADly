@@ -8,6 +8,7 @@ PendingAction = Literal[
     "area_decision",
     "area_mode",
     "manual_area_input",
+    "area_abnormal_confirmation",
     "concept_confirmation",
 ]
 
@@ -19,6 +20,7 @@ VALID_PENDING_ACTIONS = frozenset(
         "area_decision",
         "area_mode",
         "manual_area_input",
+        "area_abnormal_confirmation",
         "concept_confirmation",
     }
 )
@@ -78,7 +80,7 @@ def route_for_pending(state: Dict[str, Any]) -> Optional[str]:
     action = normalize_pending_action(state)
     if action == "manual_area_input":
         return "extract_requirements"
-    if action in ("area_decision", "area_mode"):
+    if action in ("area_decision", "area_mode", "area_abnormal_confirmation"):
         return "planning_agent"
     if action == "concept_confirmation":
         return "reference_agent"

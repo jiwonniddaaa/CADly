@@ -30,6 +30,7 @@ class PlanningState(TypedDict, total=False):
     area_recommendation_result: Optional[Dict[str, Any]]
     next_step: Literal["end", "area_recommendation", "build_design_payload"]
     pending_action: PendingAction
+    allow_abnormal_area: bool
 
 
 class PlanningAgent:
@@ -66,6 +67,7 @@ class PlanningAgent:
             "building_type": state.get("building_type"),
             "site_analysis": state.get("site_analysis"),
             "pending_action": normalize_pending_action(state),
+            "allow_abnormal_area": bool(state.get("allow_abnormal_area", False)),
         }
         return self.app.invoke(initial_state)
 
@@ -101,6 +103,8 @@ class PlanningAgent:
             }
 
         # 1) 이전 턴에서 의사결정 질문 중이었다면 먼저 답변 해석
+        if is_pending(state, "area_abnormal_confirmation"):
+            return self._handle_area_abnormal_answer(state)
         if is_pending(state, "area_decision"):
             return self._handle_area_decision_answer(state)
         if is_pending(state, "area_mode"):
@@ -176,7 +180,20 @@ class PlanningAgent:
             spaces=state.get("spaces", []),
             building_type=state.get("building_type"),
             site_analysis=state.get("site_analysis"),
+            allow_abnormal=bool(state.get("allow_abnormal_area", False)),
         )
+
+        # 비정상 입력 감지 시: 추천을 중단하고 사용자 확인을 요청 (pending 유지)
+        if result.get("status") == "needs_confirmation":
+            return {
+                "area_recommendation_result": result,
+                "ready_for_design": False,
+                **set_pending("area_abnormal_confirmation"),
+                "next_step": "end",
+                "messages": [
+                    AIMessage(content=result.get("message", "입력 면적 확인이 필요합니다."))
+                ],
+            }
 
         if result.get("status") != "success":
             return {

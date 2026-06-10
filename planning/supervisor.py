@@ -27,6 +27,7 @@ WorkflowStage = Literal[
     "awaiting_area_decision",
     "awaiting_area_mode",
     "awaiting_manual_area",
+    "awaiting_area_abnormal_confirm",
     "awaiting_design_confirm",
     "needs_site_analysis",
     "needs_requirements",
@@ -38,6 +39,7 @@ _PENDING_FLOW_ROUTES: Dict[PendingAction, str] = {
     "manual_area_input": "extract_requirements",
     "area_decision": "planning_agent",
     "area_mode": "planning_agent",
+    "area_abnormal_confirmation": "planning_agent",
     "concept_confirmation": "reference_agent",
 }
 
@@ -46,6 +48,7 @@ _PENDING_LABELS: Dict[PendingAction, str] = {
     "area_decision": "세부 공간 면적 설정 여부 확인 (네/아니오)",
     "area_mode": "면적 입력 방식 선택 (직접 입력 / 추천값)",
     "manual_area_input": "공간별 면적 직접 입력",
+    "area_abnormal_confirmation": "비정상 입력 면적 확인 (네/아니오)",
     "concept_confirmation": "레퍼런스/컨셉 확인",
 }
 
@@ -57,6 +60,10 @@ _PENDING_REMINDERS: Dict[PendingAction, str] = {
     "area_mode": (
         "\n\n—\n"
         "계속 진행하려면: **직접 입력** 또는 **추천값** 중 하나로 답해 주세요."
+    ),
+    "area_abnormal_confirmation": (
+        "\n\n—\n"
+        "계속 진행하려면: 입력하신 면적이 맞는지 **네/아니오**로 답해 주세요."
     ),
     "manual_area_input": (
         "\n\n—\n"
@@ -84,6 +91,10 @@ _WORKFLOW_GUIDANCE: Dict[WorkflowStage, str] = {
     "awaiting_manual_area": (
         "현재 단계: **공간별 면적 입력**. "
         "예) 거실 24, 주방 12, 침실1 14"
+    ),
+    "awaiting_area_abnormal_confirm": (
+        "현재 단계: **비정상 입력 면적 확인**. "
+        "입력하신 면적이 맞으면 **네**, 수정하려면 **아니오**로 답해 주세요."
     ),
     "awaiting_design_confirm": (
         "현재 단계: **도면 생성 최종 확인**. "
@@ -346,6 +357,8 @@ def derive_workflow_stage(state: Dict[str, Any]) -> WorkflowStage:
         return "awaiting_area_mode"
     if pending == "manual_area_input":
         return "awaiting_manual_area"
+    if pending == "area_abnormal_confirmation":
+        return "awaiting_area_abnormal_confirm"
 
     if state.get("design_payload") is not None or is_awaiting_design_handoff_confirmation(state):
         return "awaiting_design_confirm"
@@ -896,6 +909,8 @@ def try_pending_flow_precheck(state: Dict[str, Any]) -> Optional[str]:
         return None
 
     if pending == "area_decision" and _parse_yes_no(user_text) is not None:
+        return "planning_agent"
+    if pending == "area_abnormal_confirmation" and _parse_yes_no(user_text) is not None:
         return "planning_agent"
     if pending == "area_mode" and _parse_area_mode(user_text) is not None:
         return "planning_agent"
