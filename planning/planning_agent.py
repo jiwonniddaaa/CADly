@@ -225,8 +225,31 @@ class PlanningAgent:
             "spaces": updated_spaces,
             **clear_pending(),
             "next_step": "build_design_payload",
-            "messages": [AIMessage(content="추천값(기본값)으로 세부 면적을 계산해 반영했습니다.")],
+            "messages": [
+                AIMessage(content=self._build_area_reco_message(result))
+            ],
         }
+
+    @staticmethod
+    def _build_area_reco_message(result: Dict[str, Any]) -> str:
+        """면적 추천 결과의 explanation을 사용자용 안내 문구로 구성한다."""
+        base = "추천값(기본값)으로 세부 면적을 계산해 반영했습니다."
+        explanation = result.get("explanation") or {}
+
+        lines: List[str] = [base]
+
+        summary = explanation.get("summary")
+        if summary:
+            lines.append("")
+            lines.append(summary)
+
+        warnings = explanation.get("warnings") or []
+        if warnings:
+            lines.append("")
+            lines.append("확인이 필요한 사항:")
+            lines.extend(f"- {warning}" for warning in warnings)
+
+        return "\n".join(lines)
 
     def _route_after_verification_node(self, state: PlanningState) -> str:
         return state.get("next_step", "end")

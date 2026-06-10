@@ -313,7 +313,7 @@ def _infer_total_area(
     building_type: Optional[str],
     site_analysis: Optional[Dict[str, Any]],
     weights: Dict[str, float],
-) -> Tuple[float, str]:
+) -> Tuple[float, str, bool]:
     """
     추천 총면적을 추정한다.
 
@@ -326,16 +326,17 @@ def _infer_total_area(
     반환:
     - 추천 총면적
     - 어떤 기준으로 추정했는지 나타내는 source 문자열
+    - 역산 추정치가 범위(clamp)로 보정되었는지 여부
     """
     context = _extract_site_context(site_analysis)
 
     # 단독주택은 대지 분석 결과의 건축면적을 우선 사용
     if building_type == "single_family" and context.get("building_area_m2"):
-        return float(context["building_area_m2"]), "site_analysis_building_area"
+        return float(context["building_area_m2"]), "site_analysis_building_area", False
 
     # 공동주택은 전용면적을 우선 사용
     if building_type == "multi_family" and context.get("private_area_m2"):
-        return float(context["private_area_m2"]), "site_analysis_private_area"
+        return float(context["private_area_m2"]), "site_analysis_private_area", False
 
     # 사용자가 일부 공간 면적을 직접 입력한 경우: 가중치 비율 역산으로 총면적을 추정한다.
     # 입력 공간이 전체에서 차지하는 예상 비중으로 나눈다.
@@ -371,8 +372,9 @@ def _infer_total_area(
         empty_max = _sum_room_area(empty_spaces, _AREA_MAX_IDX) * factor
         lower = specified_sum + empty_min
         upper = specified_sum + empty_max
-        estimated_total = _clamp(estimated_total, lower, upper)
-        return round(estimated_total, 1), "user_specified_weighted_backcalc"
+        clamped_total = _clamp(estimated_total, lower, upper)
+        was_clamped = abs(clamped_total - estimated_total) > 1e-6
+        return round(clamped_total, 1), "user_specified_weighted_backcalc", was_clamped
 
     # 면적 정보가 없는 경우, 공간 구성(프로그램)별 권장 면적의 합으로 추정한다.
     # 실 개수만 보던 기존 휴리스틱과 달리 공간 유형(침실/욕실 등)을 반영한다.
@@ -382,7 +384,7 @@ def _infer_total_area(
         indoor = [{"room_type": "unknown"} for _ in range(3)]
 
     _, rec_sum, _ = _program_area_bounds(indoor, building_type)
-    return float(round(rec_sum, 1)), "room_program_heuristic"
+    return float(round(rec_sum, 1)), "room_program_heuristic", False
 
 
 # ------------------------------------------------------------
@@ -449,6 +451,74 @@ def _regulatory_cap(
         notes.append("대지면적/건폐율/용적률 기반 상한을 반영해 추천 총면적을 보정했습니다.")
 
     return round(capped, 1), notes
+
+
+# ------------------------------------------------------------
+# 추천 결과 설명(explanation) 구성
+# ------------------------------------------------------------
+
+# 총면적 산정 기준(source) → 사용자용 라벨
+_TOTAL_AREA_SOURCE_LABELS: Dict[str, str] = {
+    "site_analysis_building_area": "대지 분석 건축면적 기준",
+    "site_analysis_private_area": "대지 분석 전용면적 기준",
+    "user_specified_weighted_backcalc": "입력 면적의 예상 비중 역산",
+    "room_program_heuristic": "공간 구성별 권장 면적 합",
+}
+
+
+def _build_explanation(
+    total_area_m2: float,
+    source: str,
+    specified_spaces: List[Dict[str, Any]],
+    empty_spaces: List[Dict[str, Any]],
+    specified_sum: float,
+    remaining_area: float,
+    backcalc_clamped: bool,
+    total_raised_for_min: bool,
+    cap_notes: List[str],
+    distribution_notes: List[str],
+) -> Dict[str, Any]:
+    """추천 결과를 사람이 이해하기 쉬운 구조화된 설명으로 정리한다."""
+    source_label = _TOTAL_AREA_SOURCE_LABELS.get(source, source)
+
+    # 배분 방식 라벨
+    if not empty_spaces:
+        allocation_label = "전부 사용자 입력값 사용 (잔여 배분 없음)"
+    elif specified_spaces:
+        allocation_label = "입력 면적은 고정하고 빈 공간에만 잔여 면적을 가중치로 배분"
+    else:
+        allocation_label = "공간 유형별 가중치에 따라 전체 면적을 배분"
+
+    # clamp/보정이 한 번이라도 발생했는지
+    cap_applied = bool(cap_notes)
+    clamped = bool(backcalc_clamped or total_raised_for_min or cap_applied)
+
+    # 사용자가 알아야 할 예외/확인 사항
+    warnings: List[str] = []
+    if backcalc_clamped:
+        warnings.append(
+            "입력값 역산 결과가 빈 공간 기준 범위를 벗어나 총면적을 범위 내로 보정했습니다."
+        )
+    if total_raised_for_min:
+        warnings.append(
+            "입력 면적이 추정 총면적에 근접/초과하여, 빈 공간 최소 면적 확보를 위해 총면적을 상향했습니다."
+        )
+    warnings.extend(cap_notes)
+
+    summary = (
+        f"총면적 {total_area_m2}㎡를 '{source_label}'(으)로 산정하고, "
+        f"{allocation_label} 방식으로 공간별 면적을 추천했습니다."
+    )
+
+    return {
+        "summary": summary,
+        "total_area_source_label": source_label,
+        "allocation_method_label": allocation_label,
+        "fixed_area_sum_m2": specified_sum,
+        "remaining_area_m2": remaining_area,
+        "clamped": clamped,
+        "warnings": warnings,
+    }
 
 
 # ------------------------------------------------------------
@@ -520,7 +590,7 @@ def recommend_area_plan(
     _apply_zone_and_purpose_adjustments(weights, context)
 
     # 추천 총면적을 추정하고, 추정 기준 source를 함께 받음 (가중치 역산 포함)
-    total_area_m2, source = _infer_total_area(
+    total_area_m2, source, backcalc_clamped = _infer_total_area(
         usable_spaces,
         building_type,
         site_analysis,
@@ -554,11 +624,13 @@ def recommend_area_plan(
     # 빈 공간에 배분할 잔여 면적을 계산하고, 경계 상황을 보정한다.
     remaining_area = round(total_area_m2 - specified_sum, 1)
     distribution_notes: List[str] = []
+    total_raised_for_min = False
 
     if empty_spaces and remaining_area < empty_min_sum:
         # 입력 면적이 추정 총면적에 근접/초과해 빈 공간 최소치를 못 채우는 경우
         remaining_area = empty_min_sum
         total_area_m2 = round(specified_sum + remaining_area, 1)
+        total_raised_for_min = True
         distribution_notes.append(
             "입력 면적이 추정 총면적에 근접/초과하여, 빈 공간의 최소 면적을 "
             "확보하도록 총면적을 상향 조정했습니다."
@@ -653,6 +725,20 @@ def recommend_area_plan(
         "vl_rat": context.get("vl_rat"),
     }
 
+    # 사용자/프론트엔드가 추천 근거를 한눈에 이해할 수 있는 구조화된 설명을 구성한다.
+    explanation = _build_explanation(
+        total_area_m2=total_area_m2,
+        source=source,
+        specified_spaces=specified_spaces,
+        empty_spaces=empty_spaces,
+        specified_sum=round(float(specified_sum), 1),
+        remaining_area=round(float(remaining_area), 1),
+        backcalc_clamped=backcalc_clamped,
+        total_raised_for_min=total_raised_for_min,
+        cap_notes=cap_notes,
+        distribution_notes=distribution_notes,
+    )
+
     # 최종 추천 결과 반환함
     return {
         "status": "success",
@@ -661,4 +747,5 @@ def recommend_area_plan(
         "recommended_spaces": recommended_spaces,
         "assumptions": assumptions,
         "rule_trace": rule_trace,
+        "explanation": explanation,
     }
