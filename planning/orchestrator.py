@@ -22,6 +22,11 @@ from planning.pending_state import (
     resolve_pending_after_planning_agent,
 )
 from planning.planning_agent import PlanningAgent
+from planning.space_utils import (
+    apply_single_room_generator_fallback,
+    indoor_spaces,
+    strip_outside_edges,
+)
 from planning.supervisor import (
     build_session_context,
     flow_guidance,
@@ -348,8 +353,8 @@ def sketch_apply_node(state: PlanningState) -> PlanningState:
 
     update: PlanningState = {
         "sketch_apply_ok": True,
-        "spaces": spaces,
-        "edges": sketch_result.get("edges") or state.get("edges") or [],
+        "spaces": indoor_spaces(spaces),
+        "edges": strip_outside_edges(sketch_result.get("edges") or state.get("edges") or []),
         "sketch_result": sketch_result,
         "image_type": state.get("image_type") or "hand_sketch",
     }
@@ -401,7 +406,8 @@ Extract and update the user's design requirements from the conversation.
 Important:
 - Preserve previous requirements unless the user clearly changes them.
 - Use stable room ids in snake_case.
-- edges mean adjacency or direct relationship between rooms.
+- edges mean adjacency between indoor rooms only.
+- Do not include outside in spaces or edges.
 - area is optional. If unknown, use null.
 - Do not invent rooms unless strongly implied.
 - Extract output_name if the user explicitly mentions a file name.
@@ -441,7 +447,8 @@ Return only JSON:
     }
   ],
   "edges": [
-    ["living_room1", "outside"],
+    ["entrance1", "living_room1"],
+    ["living_room1", "kitchen1"]
   ],
   "output_name": null,
   "building_type": null,
@@ -490,8 +497,8 @@ Recent conversation:
         }
 
     update: PlanningState = {
-        "spaces": parsed.get("spaces", current_spaces),
-        "edges": parsed.get("edges", current_edges),
+        "spaces": indoor_spaces(parsed.get("spaces", current_spaces)),
+        "edges": strip_outside_edges(parsed.get("edges", current_edges)),
         "output_name": parsed.get("output_name") or current_output_name,
         "building_type": parsed.get("building_type") or current_building_type,
         **clear_pending(),
@@ -513,20 +520,11 @@ def planning_agent_node(state: PlanningState) -> PlanningState:
     }
 
 def build_design_payload_node(state: PlanningState) -> PlanningState:
-    spaces = state.get("spaces", [])
-    edges = state.get("edges", [])
+    spaces = indoor_spaces(state.get("spaces", []))
+    edges = strip_outside_edges(state.get("edges", []))
     building_type = state.get("building_type")
 
-    if len(spaces) == 1 and not edges: # house diffusion을 위한 최소한의 edge 정보 추가
-        spaces = spaces + [
-            {
-                "id": "outside",
-                "room_type": "outside",
-                "area": None,
-                "notes": "auto-added boundary node",
-            }
-        ]
-        edges = [[spaces[0]["id"], "outside"]]
+    payload_spaces, payload_edges = apply_single_room_generator_fallback(spaces, edges)
 
     site_analysis = state.get("site_analysis") or {}
     diffusion_output = site_analysis.get("diffusion_output", {})
@@ -549,18 +547,18 @@ def build_design_payload_node(state: PlanningState) -> PlanningState:
 
     payload = {
         "design_requirements": {
-            "spaces": spaces,
-            "edges": edges,
+            "spaces": payload_spaces,
+            "edges": payload_edges,
         },
         "generation_context": {
-            "room_type": [space["room_type"] for space in spaces],
+            "room_type": [space["room_type"] for space in payload_spaces],
             "area_m2": area_for_generation,
             "area": {
                 space["id"]: space.get("area")
-                for space in spaces
+                for space in payload_spaces
                 if space.get("area") is not None
             },
-            "edges": edges,
+            "edges": payload_edges,
         },
     }
 

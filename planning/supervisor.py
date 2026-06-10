@@ -9,6 +9,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from planning.pending_state import PendingAction, normalize_pending_action
+from planning.space_utils import indoor_spaces
 
 VALID_SUPERVISOR_ROUTES = frozenset(
     {
@@ -435,7 +436,7 @@ def build_session_context(state: Dict[str, Any]) -> str:
         "pending_label": _PENDING_LABELS.get(pending, pending),
         "pending_flow_route_if_continue": _PENDING_FLOW_ROUTES.get(pending),
         "concept": state.get("concept"),
-        "spaces": state.get("spaces", []),
+        "spaces": indoor_spaces(state.get("spaces", [])),
         "edges": state.get("edges", []),
         "output_name": state.get("output_name"),
         "building_type": state.get("building_type"),
