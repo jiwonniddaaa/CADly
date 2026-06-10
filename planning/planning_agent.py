@@ -254,6 +254,51 @@ class PlanningAgent:
     def _route_after_verification_node(self, state: PlanningState) -> str:
         return state.get("next_step", "end")
 
+    def _handle_area_abnormal_answer(self, state: PlanningState) -> PlanningState:
+        user_text = self._last_user_text(state)
+        decision = self._parse_yes_no(user_text)
+
+        # 값이 맞다고 확인 → sanity check를 건너뛰고 입력값 그대로 추천 재진행
+        if decision == "yes":
+            return {
+                **clear_pending(),
+                "allow_abnormal_area": True,
+                "next_step": "area_recommendation",
+                "messages": [
+                    AIMessage(content="입력값을 그대로 반영해 추천을 진행하겠습니다.")
+                ],
+            }
+
+        # 오기입 → 직접 재입력 요청
+        if decision == "no":
+            return {
+                "ready_for_design": False,
+                **set_pending("manual_area_input"),
+                "next_step": "end",
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "알겠습니다. 면적을 다시 입력해 주세요.\n"
+                            + self._manual_area_input_prompt()
+                        )
+                    )
+                ],
+            }
+
+        return {
+            **set_pending("area_abnormal_confirmation"),
+            "next_step": "end",
+            "messages": [
+                AIMessage(
+                    content=(
+                        "입력하신 면적이 맞는지 확인해 주세요.\n"
+                        "- 네: 입력값 그대로 진행\n"
+                        "- 아니오: 면적 다시 입력"
+                    )
+                )
+            ],
+        }
+
     def _handle_area_decision_answer(self, state: PlanningState) -> PlanningState:
         user_text = self._last_user_text(state)
         decision = self._parse_yes_no(user_text)

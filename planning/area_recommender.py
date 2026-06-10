@@ -603,6 +603,8 @@ def recommend_area_plan(
         context,
         building_type
     )
+    # 입력값 보존 정책이 상한보다 우선할 수 있으므로, 보정된 상한값을 기억해 둔다.
+    regulatory_cap_total = total_area_m2
 
     # 면적이 이미 입력된 공간과 비어 있는 공간을 분리한다.
     # 입력값은 그대로 보존하고, 잔여 면적(remaining)을 빈 공간끼리만 배분한다.
@@ -693,6 +695,22 @@ def recommend_area_plan(
                 ),
             }
         )
+
+    # 최종 총면적이 법규 상한을 초과하면 "상한을 반영했다"는 안내는 사실과 어긋나므로
+    # 초과 원인에 맞게 문구를 교체/정리한다.
+    if cap_notes and total_area_m2 > regulatory_cap_total + 1e-6:
+        if specified_sum > regulatory_cap_total + 1e-6:
+            # 사용자 입력 면적 합 자체가 상한을 초과 → 입력값 우선 정책 안내
+            cap_notes = [
+                "입력 면적 합이 법규 기반 상한을 초과하지만, 입력값을 우선 적용했습니다. "
+                "실제 인허가 단계에서 면적/층수 조정이 필요할 수 있습니다."
+            ]
+        else:
+            # 빈 공간 최소 면적 확보로 상한을 초과한 경우 (별도 경고가 이미 존재)
+            cap_notes = [
+                "공간 구성의 최소 면적 합이 법규 기반 상한을 초과해, 상한을 그대로 적용하지 못했습니다. "
+                "실제 인허가 단계에서 면적/층수 조정이 필요할 수 있습니다."
+            ]
 
     # 추천 결과를 해석할 때 필요한 전제 조건을 정리
     assumptions = [
