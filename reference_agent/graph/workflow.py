@@ -223,6 +223,8 @@ def search_node(state: GraphState):
             "proceed_to_search": False,
         }
 
+    print(f"[reference_search] SEARCH: {query} (input_mode={state.get('input_mode', 'text')})")
+
     # SerpApi 연동 커넥터 호출
     results = search_reference_images(query=query, limit=5)
     
