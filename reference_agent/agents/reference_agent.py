@@ -13,6 +13,7 @@ _CONCEPT_STATE_KEYS = (
     "narrative",
     "concept_structured",
     "awaiting_concept_confirmation",
+    "last_search_query",
 )
 
 
@@ -97,4 +98,5 @@ class ReferenceAgent:
                 "awaiting_concept_confirmation", False
             ),
             "proceed_to_search": final_state.get("proceed_to_search", False),
+            "last_search_query": final_state.get("last_search_query", ""),
         }

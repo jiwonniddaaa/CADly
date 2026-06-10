@@ -36,6 +36,7 @@ _LEGACY_PLANNING_KEYS = (
     "building_type",
     "site_analysis",
     "image_type",
+    "last_search_query",
 )
 
 

@@ -1,11 +1,21 @@
+# CADly/agent/chat_service.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from CADly.agent.design_chat_service import run_design_chat
 from CADly.agent.planning_chat_service import run_planning_chat
-from CADly.agent.session_utils import split_session_blob
+from CADly.agent.session_utils import merge_session_blob, read_svg_content, split_session_blob
 from CADly.agent.payload_adapter import convert_design_payload_to_graph
+
+# 도면 완료 후 Design 모드 잠금 안내 (문구는 추후 변경 가능)
+DESIGN_MODE_LOCKED_MSG = (
+    "도면 생성이 완료되었습니다. 완료된 세션에서는 추가 요청을 처리하지 않습니다. "
+    "새 프로젝트를 시작해 주세요."
+)
+
 
 def _sanitize_output_name(raw_name: Optional[str]) -> str:
     name = raw_name or "CADly_Result_001"
@@ -15,6 +25,7 @@ def _sanitize_output_name(raw_name: Optional[str]) -> str:
         .replace("/", "_")
         .replace("\\", "_")
     )
+
 
 def _build_design_session_state(
     *,
@@ -44,6 +55,47 @@ def _build_design_session_state(
         "design_state": patched_design_state,
     }
 
+
+def _is_design_completed(design_state: Dict[str, Any]) -> bool:
+    return (
+        design_state.get("status") == "completed"
+        and bool(design_state.get("svg_path"))
+    )
+
+
+def _design_mode_locked_response(
+    *,
+    query: str,
+    session_state: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    messages, _, design_state, planning_fields = split_session_blob(session_state)
+    user_text = (query or "").strip()
+    if user_text:
+        messages = [*messages, HumanMessage(content=user_text)]
+    messages = [*messages, AIMessage(content=DESIGN_MODE_LOCKED_MSG)]
+
+    planning_state = merge_session_blob(
+        planning_fields,
+        messages,
+        "design",
+        design_state,
+    )
+    return {
+        "response": DESIGN_MODE_LOCKED_MSG,
+        "search_results": [],
+        "references": [],
+        "planning_state": planning_state,
+        "active_orchestrator": "design",
+        "design_state": design_state,
+        "route": "design",
+        "agent_type": "design",
+        "status": design_state.get("status"),
+        "svg_path": design_state.get("svg_path"),
+        "dxf_path": design_state.get("dxf_path"),
+        "cad_svg_content": read_svg_content(design_state.get("svg_path")),
+    }
+
+
 async def run_cadly_chat(
     *,
     query: str,
@@ -55,13 +107,21 @@ async def run_cadly_chat(
 ) -> Dict[str, Any]:
     """CADly 통합 채팅
 
-    - 현재 세션이 design 상태이고 graph_data가 있으면 Design orchestrator로 바로 전달
+    - 도면 완료된 Design 세션이면 모든 요청에 잠금 안내 반환
+    - Design 활성화 + graph_data가 있으면 Design orchestrator로 전달
     - 그 외에는 Planning orchestrator를 실행
     - Planning 결과가 handoff_to_design이면 design_payload를 graph_data로 변환한 뒤 Design 자동 실행
     """
     _, active_orchestrator, design_state, _ = split_session_blob(planning_state)
 
-    # 1. 이미 Design 활성화 세션이면 바로 Design 진입
+    # 1. 도면 완료 후 Design 모드 잠금 — 추가 요청은 모두 동일 안내
+    if active_orchestrator == "design" and _is_design_completed(design_state):
+        return _design_mode_locked_response(
+            query=query,
+            session_state=planning_state,
+        )
+
+    # 2. Design 활성화 세션이면 Design 파이프라인 실행
     if active_orchestrator == "design" and design_state.get("graph_data"):
         return await run_design_chat(
             query=query,
@@ -71,7 +131,7 @@ async def run_cadly_chat(
             image_media_type=image_media_type,
         )
 
-    # 2. 기본 Planning 실행
+    # 3. 기본 Planning 실행
     result = await run_planning_chat(
         query=query,
         planning_state=planning_state,
@@ -94,7 +154,7 @@ async def run_cadly_chat(
     print("planning_state keys:", (result.get("planning_state") or {}).keys())
     print("==============================================\n")
     
-    # 3. Planning 결과가 handoff_to_design이면 design_payload를 graph_data로 변환한 뒤 Design 자동 실행
+    # 4. Planning 결과가 handoff_to_design이면 design_payload를 graph_data로 변환한 뒤 Design 자동 실행
     design_payload = (
         result.get("design_payload")
         or planning_state_result.get("design_payload")
@@ -127,5 +187,5 @@ async def run_cadly_chat(
             image_media_type=image_media_type,
             append_user_message=False,
         )
-    
+
     return result

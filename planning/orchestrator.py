@@ -101,6 +101,7 @@ class PlanningState(TypedDict, total=False):
     concept_updated_at: Optional[str]
 
     references: Optional[List[Dict[str, Any]]]
+    last_search_query: Optional[str]
     site_analysis: Optional[Dict[str, Any]]
     
     image_base64: Optional[str]
@@ -281,6 +282,7 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         "narrative": state.get("narrative") or "",
         "concept_structured": state.get("concept_structured") or {},
         "awaiting_concept_confirmation": reference_awaiting_from_pending(state),
+        "last_search_query": state.get("last_search_query") or "",
     }
 
     result = reference_agent.chat(
@@ -304,6 +306,11 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         update["pending_action"] = "concept_confirmation"
     elif is_pending(state, "concept_confirmation"):
         update["pending_action"] = "none"
+
+    if result.get("last_search_query"):
+        update["last_search_query"] = result["last_search_query"]
+    elif result.get("search_query"):
+        update["last_search_query"] = result["search_query"]
 
     # 예린 - 컨셉 개발 의도가 있거나 컨셉 결과가 있으면 컨셉 상태를 업데이트함
     if result.get("intent") == "concept_develop" or result.get("concept_result"):
