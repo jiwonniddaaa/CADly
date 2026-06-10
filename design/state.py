@@ -54,6 +54,7 @@ class CADlyGenerationState(TypedDict, total=False):
     # QCAD generation
     qcad_output_dir: str
     qcad_dxf_path: str
+    qcad_repair_error: str
 
     # generation mode
     generation_mode: Literal["sampling", "qcad"]
