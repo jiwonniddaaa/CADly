@@ -504,6 +504,7 @@ def _build_explanation(
             "입력 면적이 추정 총면적에 근접/초과하여, 빈 공간 최소 면적 확보를 위해 총면적을 상향했습니다."
         )
     warnings.extend(cap_notes)
+    warnings.extend(distribution_notes)
 
     summary = (
         f"총면적 {total_area_m2}㎡를 '{source_label}'(으)로 산정하고, "
@@ -742,6 +743,11 @@ def recommend_area_plan(
         "bc_rat": context.get("bc_rat"),
         "vl_rat": context.get("vl_rat"),
     }
+
+    if source == "room_program_heuristic":
+        distribution_notes.append(
+            "대지/건축면적 정보가 부족해 공간 구성 기준으로 총면적을 추정했습니다."
+        )
 
     # 사용자/프론트엔드가 추천 근거를 한눈에 이해할 수 있는 구조화된 설명을 구성한다.
     explanation = _build_explanation(

@@ -9,6 +9,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from planning.pending_state import PendingAction, normalize_pending_action
+from planning.planning_agent import has_recommendation_inputs
 from planning.space_utils import indoor_spaces
 
 VALID_SUPERVISOR_ROUTES = frozenset(
@@ -46,7 +47,7 @@ _PENDING_FLOW_ROUTES: Dict[PendingAction, str] = {
 _PENDING_LABELS: Dict[PendingAction, str] = {
     "none": "없음",
     "area_decision": "세부 공간 면적 설정 여부 확인 (네/아니오)",
-    "area_mode": "면적 입력 방식 선택 (직접 입력 / 추천값)",
+    "area_mode": "면적 입력 방식 선택 (대지 분석 / 직접 입력 / 추천값)",
     "manual_area_input": "공간별 면적 직접 입력",
     "area_abnormal_confirmation": "비정상 입력 면적 확인 (네/아니오)",
     "concept_confirmation": "레퍼런스/컨셉 확인",
@@ -59,7 +60,7 @@ _PENDING_REMINDERS: Dict[PendingAction, str] = {
     ),
     "area_mode": (
         "\n\n—\n"
-        "계속 진행하려면: **직접 입력** 또는 **추천값** 중 하나로 답해 주세요."
+        "계속 진행하려면: **대지 분석**, **직접 입력**, **추천값** 중 하나로 답해 주세요."
     ),
     "area_abnormal_confirmation": (
         "\n\n—\n"
@@ -86,7 +87,7 @@ _WORKFLOW_GUIDANCE: Dict[WorkflowStage, str] = {
     ),
     "awaiting_area_mode": (
         "현재 단계: **면적 입력 방식 선택**. "
-        "**직접 입력** 또는 **추천값** 중 하나로 답해 주세요."
+        "**대지 분석**, **직접 입력**, **추천값** 중 하나로 답해 주세요."
     ),
     "awaiting_manual_area": (
         "현재 단계: **공간별 면적 입력**. "
@@ -360,7 +361,7 @@ def derive_workflow_stage(state: Dict[str, Any]) -> WorkflowStage:
     if pending == "area_abnormal_confirmation":
         return "awaiting_area_abnormal_confirm"
 
-    if state.get("design_payload") is not None or is_awaiting_design_handoff_confirmation(state):
+    if state.get("design_payload") is not None or is_awaiting_design_handoff_confirmagtion(state):
         return "awaiting_design_confirm"
 
     spaces = state.get("spaces") or []
@@ -623,10 +624,31 @@ def _parse_yes_no(user_text: str) -> Optional[Literal["yes", "no"]]:
     return None
 
 
-def _parse_area_mode(user_text: str) -> Optional[Literal["manual", "recommend"]]:
+def _parse_area_mode(
+    user_text: str,
+    *,
+    limited_site: bool = False,
+) -> Optional[Literal["manual", "recommend", "site_analysis"]]:
     normalized = (user_text or "").lower().replace(" ", "")
+    site_tokens = ["대지분석", "대지조사", "siteanalysis", "siteagent"]
     manual_tokens = ["직접입력", "수동입력", "직접", "manual"]
     recommend_tokens = ["추천값", "추천", "기본값", "recommend"]
+
+    if limited_site:
+        if normalized == "1":
+            return "site_analysis"
+        if normalized == "2":
+            return "manual"
+        if normalized == "3":
+            return "recommend"
+    else:
+        if normalized == "1":
+            return "manual"
+        if normalized == "2":
+            return "recommend"
+
+    if any(token in normalized for token in site_tokens) or normalized == "대지":
+        return "site_analysis"
     if any(token in normalized for token in manual_tokens):
         return "manual"
     if any(token in normalized for token in recommend_tokens):
@@ -912,7 +934,10 @@ def try_pending_flow_precheck(state: Dict[str, Any]) -> Optional[str]:
         return "planning_agent"
     if pending == "area_abnormal_confirmation" and _parse_yes_no(user_text) is not None:
         return "planning_agent"
-    if pending == "area_mode" and _parse_area_mode(user_text) is not None:
+    if pending == "area_mode" and _parse_area_mode(
+        user_text,
+        limited_site=not has_recommendation_inputs(state),
+    ) is not None:
         return "planning_agent"
     if pending == "manual_area_input" and _looks_like_manual_area_input(user_text):
         return "extract_requirements"

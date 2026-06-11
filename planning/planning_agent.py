@@ -18,6 +18,30 @@ from planning.pending_state import (
 from reference_agent.utils.message_content import extract_user_text
 
 
+def has_recommendation_inputs(state: Dict[str, Any]) -> bool:
+    """대지 분석·법규 필드가 추천 상한 보정까지 가능한 수준인지 판별."""
+    if state.get("building_type") not in {"single_family", "multi_family"}:
+        return False
+
+    site_analysis = state.get("site_analysis") or {}
+    diffusion_output = site_analysis.get("diffusion_output") or {}
+    raw = site_analysis.get("raw_site_output") or {}
+    raw_diffusion = raw.get("diffusion_output") or {}
+    identifiers = raw.get("building_identifiers") or {}
+
+    required_diffusion = ["building_area_m2", "private_area_m2", "common_area_m2"]
+    required_raw = ["site_area_m2", "building_area_m2", "private_area_m2", "common_area_m2"]
+    required_identifiers = ["main_purpose", "legal_zone", "bc_rat", "vl_rat"]
+
+    if not all(diffusion_output.get(key) is not None for key in required_diffusion):
+        return False
+    if not all(raw_diffusion.get(key) is not None for key in required_raw):
+        return False
+    if not all(identifiers.get(key) not in (None, "", "정보없음") for key in required_identifiers):
+        return False
+    return True
+
+
 class PlanningState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
     spaces: List[Dict[str, Any]]
@@ -77,6 +101,26 @@ class PlanningAgent:
             "각 공간의 면적을 직접 입력해 주세요.\n"
             "예: 거실 24, 주방 12, 침실1 14, 침실2 12, 화장실 5"
         )
+
+    @staticmethod
+    def _limited_site_area_mode_prompt() -> str:
+        return (
+            "세부 공간 면적이 비어 있습니다.\n\n"
+            "대지/법규 정보가 일부 부족해, 추천 시 전체 면적은 공간 구성 기준으로 추정됩니다. "
+            "대지 분석을 완료하면 건축면적·법규 상한을 반영해 더 정확해집니다.\n\n"
+            "원하시는 방식을 선택해 주세요.\n"
+            "1) 대지 분석 진행\n"
+            "2) 공간별 면적 직접 입력\n"
+            "3) 추천값으로 계산\n\n"
+            "답변 예: '대지 분석', '직접 입력', '추천값'"
+        )
+
+    def _area_mode_retry_message(self, state: PlanningState) -> str:
+        if not self._has_recommendation_inputs(state):
+            return (
+                "진행 방식을 '대지 분석', '직접 입력', '추천값' 중 하나로 답해 주세요."
+            )
+        return "진행 방식을 '직접 입력' 또는 '추천값'으로 답해 주세요."
 
     # verification_node
     def verification_node(self, state: PlanningState) -> PlanningState:
@@ -139,15 +183,10 @@ class PlanningAgent:
                 return {
                     "ready_for_design": False,
                     "missing_requirements": ["세부 공간 면적"],
-                    **set_pending("manual_area_input"),
+                    **set_pending("area_mode"),
                     "next_step": "end",
                     "messages": [
-                        AIMessage(
-                            content=(
-                                "세부 공간 면적이 비어 있지만 추천 계산에 필요한 대지/법규 정보가 부족합니다.\n"
-                                + self._manual_area_input_prompt()
-                            )
-                        )
+                        AIMessage(content=self._limited_site_area_mode_prompt())
                     ],
                 }
             return {
@@ -337,8 +376,22 @@ class PlanningAgent:
 
     def _handle_area_mode_answer(self, state: PlanningState) -> PlanningState:
         user_text = self._last_user_text(state)
-        mode = self._parse_area_mode(user_text)
+        limited_site = not self._has_recommendation_inputs(state)
+        mode = self._parse_area_mode(user_text, limited_site=limited_site)
 
+        if mode == "site_analysis":
+            return {
+                **clear_pending(),
+                "next_step": "end",
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "대지 분석을 진행하겠습니다. "
+                            "분석할 주소나 지번을 알려주세요. (예: 역삼동 747)"
+                        )
+                    )
+                ],
+            }
         if mode == "recommend":
             return {
                 **clear_pending(),
@@ -358,7 +411,7 @@ class PlanningAgent:
             **set_pending("area_mode"),
             "next_step": "end",
             "messages": [
-                AIMessage(content="진행 방식을 '직접 입력' 또는 '추천값'으로 답해 주세요.")
+                AIMessage(content=self._area_mode_retry_message(state))
             ],
         }
 
@@ -385,10 +438,32 @@ class PlanningAgent:
             return True
         return any(marker in raw for marker in ("출처", "기준", "어디서", "왜"))
 
-    def _parse_area_mode(self, text: str) -> Optional[Literal["manual", "recommend"]]:
+    def _parse_area_mode(
+        self,
+        text: str,
+        *,
+        limited_site: bool = False,
+    ) -> Optional[Literal["manual", "recommend", "site_analysis"]]:
         normalized = text.lower().replace(" ", "")
+        site_tokens = ["대지분석", "대지조사", "siteanalysis", "siteagent"]
         manual_tokens = ["직접입력", "수동입력", "직접", "manual"]
         recommend_tokens = ["추천값", "추천", "기본값", "recommend"]
+
+        if limited_site:
+            if normalized == "1":
+                return "site_analysis"
+            if normalized == "2":
+                return "manual"
+            if normalized == "3":
+                return "recommend"
+        else:
+            if normalized == "1":
+                return "manual"
+            if normalized == "2":
+                return "recommend"
+
+        if any(token in normalized for token in site_tokens) or normalized == "대지":
+            return "site_analysis"
         if any(token in normalized for token in manual_tokens):
             return "manual"
         if any(token in normalized for token in recommend_tokens):
@@ -406,26 +481,7 @@ class PlanningAgent:
         return False
 
     def _has_recommendation_inputs(self, state: Dict[str, Any]) -> bool:
-        if state.get("building_type") not in {"single_family", "multi_family"}:
-            return False
-
-        site_analysis = state.get("site_analysis") or {}
-        diffusion_output = site_analysis.get("diffusion_output") or {}
-        raw = site_analysis.get("raw_site_output") or {}
-        raw_diffusion = raw.get("diffusion_output") or {}
-        identifiers = raw.get("building_identifiers") or {}
-
-        required_diffusion = ["building_area_m2", "private_area_m2", "common_area_m2"]
-        required_raw = ["site_area_m2", "building_area_m2", "private_area_m2", "common_area_m2"]
-        required_identifiers = ["main_purpose", "legal_zone", "bc_rat", "vl_rat"]
-
-        if not all(diffusion_output.get(key) is not None for key in required_diffusion):
-            return False
-        if not all(raw_diffusion.get(key) is not None for key in required_raw):
-            return False
-        if not all(identifiers.get(key) not in (None, "", "정보없음") for key in required_identifiers):
-            return False
-        return True
+        return has_recommendation_inputs(state)
 
     def _check_spaces(self, spaces: List[Dict[str, Any]], missing: List[str]) -> None:
         if not spaces:
