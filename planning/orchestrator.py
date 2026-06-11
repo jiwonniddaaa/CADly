@@ -53,9 +53,10 @@ low_llm = ChatAnthropic(
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = Path("/workspace/db/data")
 
-dataset_path = PROJECT_ROOT / "data" / "mart_djy_03_clean.csv"
-db_path = PROJECT_ROOT / "data" / "mart_building_data.db"
+dataset_path = DATA_ROOT / "mart_djy_03_clean.csv"
+db_path = DATA_ROOT / "mart_building_data.db"
 
 reference_agent = ReferenceAgent()
 

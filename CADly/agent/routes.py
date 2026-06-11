@@ -53,16 +53,14 @@ async def cadly_chat(req: ChatRequest):
 class CadImportRequest(BaseModel):
     dxf_path: str
     target_cad: CadTarget = "autocad"
-    rhino_exe_path: Optional[str] = None
 
 
 @router.post("/cad/import")
 async def cad_import(req: CadImportRequest):
-    """MCP로 로컬 CAD 앱(AutoCAD/Rhino)에서 DXF를 엽니다."""
-    return import_dxf_to_cad(
+    """MCP로 로컬 CAD 앱(AutoCAD/QCAD)에서 DXF를 엽니다."""
+    return await import_dxf_to_cad(
         dxf_path=req.dxf_path,
         target_cad=req.target_cad,
-        rhino_exe_path=req.rhino_exe_path,
     )
 
 

@@ -11,5 +11,34 @@ uvicorn
 pydantic
 pydantic-settings
 python-dotenv
+
+# HouseDiffusion / PyTorch
+torch
+torchvision
+torchaudio
+numpy
+scipy
+tqdm
 Pillow
-pillow-heif
+matplotlib
+
+# HouseDiffusion 내부 유틸
+blobfile
+mpi4py
+
+# CAD / SVG / DXF export
+ezdxf
+drawsvg
+svgwrite
+shapely
+
+# MCP / Claude-QCAD 연동
+mcp
+
+# 이미지/파일 처리
+opencv-python-headless
+imageio
+
+# API 업로드/파일 처리
+python-multipart
+aiofiles

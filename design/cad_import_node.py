@@ -5,7 +5,7 @@ from design.mcp_client import call_cad_import_tool
 
 def cad_import_node(state: CADlyGenerationState) -> CADlyGenerationState:
     dxf_path = state.get("dxf_path")
-    target_cad = state.get("target_cad", "rhino")
+    target_cad = state.get("target_cad", "qcad")
 
     if not dxf_path:
         return {

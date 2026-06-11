@@ -53,6 +53,7 @@ def qcad_refinement_node(state):
                     # door ploicy
                     "door_width_ratio": 0.08,
                     "add_entrance_door": True,
+                    "add_bathroom_door": True,
                 }
             }
         ]

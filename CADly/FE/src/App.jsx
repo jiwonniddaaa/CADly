@@ -7,7 +7,7 @@ import { cadlyApi } from './services/api';
 function App() {
   const [currentView, setCurrentView] = useState('chat');
   const [cadSvgContent, setCadSvgContent] = useState(null);
-  const [designOutput, setDesignOutput] = useState({ svgPath: null, dxfPath: null, status: null });
+  const [designOutput, setDesignOutput] = useState({ svgPath: null, dxfPath: null, status: null, metrics: null, });
   const [projectId, setProjectId] = useState('proj_123');
   
   // ✨ 핵심 해결: 채팅 메시지 상태를 App으로 끌어올림 (화면을 왔다 갔다 해도 유지됨)
@@ -30,7 +30,7 @@ function App() {
     const newProjectId = `proj_${Date.now()}`;
     setProjectId(newProjectId);
     setCadSvgContent(null);
-    setDesignOutput({ svgPath: null, dxfPath: null, status: null });
+    setDesignOutput({ svgPath: null, dxfPath: null, status: null, metrics: null });
     setCurrentView('chat');
     try {
       await cadlyApi.clearSession(previousProjectId);

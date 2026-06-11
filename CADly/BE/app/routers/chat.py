@@ -61,6 +61,7 @@ async def chat(
         svg_path = agent_response.get("svg_path")
         dxf_path = agent_response.get("dxf_path")
         design_status = agent_response.get("status")
+        metrics = agent_response.get("metrics")
         route, agent_type, route_label, active_orchestrator = normalize_agent_metadata(
             agent_response,
             references,
@@ -79,12 +80,14 @@ async def chat(
             cad_svg_content=cad_svg_content,
             svg_path=svg_path,
             dxf_path=dxf_path,
+            status=design_status,
             design_status=design_status,
             route=route,
             agent_type=agent_type,
             route_label=route_label,
             active_orchestrator=active_orchestrator,
             debug=debug,
+            metrics=metrics,
         )
 
     except httpx.HTTPStatusError as e:

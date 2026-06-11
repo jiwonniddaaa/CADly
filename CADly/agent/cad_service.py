@@ -6,10 +6,7 @@ from typing import Any, Dict, Literal, Tuple
 
 from design.mcp_client import call_cad_import_tool_async
 
-CadTarget = Literal["autocad", "rhino"]
-
-_DEFAULT_RHINO_APP = "/Applications/Rhino 8.app"
-
+CadTarget = Literal["autocad", "qcad"]
 
 def _parse_mcp_import_result(mcp_result: Dict[str, Any]) -> Tuple[bool, str]:
     if not mcp_result.get("ok"):
@@ -54,12 +51,12 @@ async def import_dxf_to_cad(
             "import_to_autocad",
             {"dxf_path": resolved},
         )
-    elif target_cad == "rhino":
+    elif target_cad == "qcad":
         mcp_result = await call_cad_import_tool_async(
-            "import_to_rhino",
+            "import_to_qcad",
             {
                 "dxf_path": resolved,
-                "rhino_exe_path": rhino_exe_path or os.getenv("RHINO_APP_PATH", _DEFAULT_RHINO_APP),
+                "qcad_app_path": os.getenv("QCAD_APP_PATH", "QCAD")
             },
         )
     else:

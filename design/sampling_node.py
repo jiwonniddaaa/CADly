@@ -21,7 +21,7 @@ def run_sampling(state: CADlyGenerationState) -> CADlyGenerationState:
         }
 
     graph_json_path = Path(graph_json_path_value)
-    model_path = resolve_hd_path(state.get("model_path", "ckpts/exp/model250000.pt"))
+    model_path = resolve_hd_path(state.get("model_path", "/workspace/ckpts/exp/model250000.pt"))
     out_dir = resolve_hd_path(state.get("out_dir", "outputs/cadly"))
     name = state.get("name", "floorplan")
 

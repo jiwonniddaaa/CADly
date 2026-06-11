@@ -10,8 +10,9 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
   const [modelingStep, setModelingStep] = useState('initial');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedFile, setGeneratedFile] = useState(null);
-  const [cadExportTarget, setCadExportTarget] = useState(null);
-  const [cadExportMessage, setCadExportMessage] = useState('');
+  const [cadOpenTarget, setCadOpenTarget] = useState(null);
+  const [cadOpenMessage, setCadOpenMessage] = useState('');
+  const [isOpeningCad, setIsOpeningCad] = useState(false);
 
   const triggerBlobDownload = (blob, filename) => {
     const downloadUrl = URL.createObjectURL(blob);
@@ -30,37 +31,53 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
       ? designOutput.dxfPath.split('/').pop()
       : 'floorplan.dxf';
     triggerBlobDownload(blobData, filename);
-    setCadExportMessage('CAD 앱 열기에 실패해 DXF 파일을 다운로드했습니다.');
+    setCadOpenMessage('CAD 앱 열기에 실패해 DXF 파일을 다운로드했습니다.');
   };
 
-  const handleCadExport = async (targetCad) => {
+  const handleOpenInCad = async (targetCad) => {
+    if (!projectId) {
+      alert('projectId가 없습니다.');
+      return;
+    }
+
     if (!designOutput?.dxfPath) {
       alert('DXF 파일이 없습니다. 도면 생성을 먼저 완료해 주세요.');
       return;
     }
 
-    setCadExportTarget(targetCad);
-    setCadExportMessage('');
+    setIsOpeningCad(true);
+    setCadOpenTarget(targetCad);
+    setCadOpenMessage('');
+
     try {
-      const result = await cadlyApi.importToCad(projectId, targetCad, designOutput.dxfPath);
-      if (result.ok) {
-        setCadExportMessage(result.message || 'CAD 앱에서 DXF를 열었습니다.');
+      const result = await cadlyApi.openInCad(
+        projectId,
+        targetCad,
+        designOutput.dxfPath
+      );
+
+      if (result?.ok) {
+        setCadOpenMessage(
+          result.message || `${targetCad.toUpperCase()}에서 DXF를 열었습니다.`
+        );
         return;
       }
 
+    await downloadDxfFallback();
+  } catch (error) {
+    console.error(`${targetCad} CAD open failed:`, error);
+
+    try {
       await downloadDxfFallback();
-    } catch (error) {
-      console.error('CAD export failed:', error);
-      try {
-        await downloadDxfFallback();
-      } catch (downloadError) {
-        console.error('DXF download fallback failed:', downloadError);
-        alert('CAD 연동 및 DXF 다운로드에 모두 실패했습니다.');
-      }
-    } finally {
-      setCadExportTarget(null);
+    } catch (downloadError) {
+      console.error('DXF download fallback failed:', downloadError);
+      alert('CAD 앱 열기 및 DXF 다운로드에 모두 실패했습니다.');
     }
-  };
+  } finally {
+    setCadOpenTarget(null);
+    setIsOpeningCad(false);
+  }
+};
 
   // 3D 파일 생성용 FastAPI 연동 함수
   const handleGenerate3D = async (format) => {
@@ -94,6 +111,44 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(downloadUrl);
+  };
+
+    const totalArea =
+    designOutput?.totalArea ??
+    designOutput?.total_area ??
+    designOutput?.area ??
+    designOutput?.metrics?.totalArea ??
+    designOutput?.metrics?.total_area ??
+    null;
+
+  const spaceRatio =
+    designOutput?.spaceRatio ??
+    designOutput?.space_ratio ??
+    designOutput?.efficiency ??
+    designOutput?.spaceEfficiency ??
+    designOutput?.space_efficiency ??
+    designOutput?.metrics?.spaceRatio ??
+    designOutput?.metrics?.space_ratio ??
+    designOutput?.metrics?.efficiency ??
+    designOutput?.metrics?.space_efficiency ??
+    null;
+
+  const formatArea = (value) => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return '-';
+    }
+
+    return Number(value).toLocaleString(undefined, {
+      maximumFractionDigits: 1,
+    });
+  };
+
+  const formatPercent = (value) => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return '-';
+    }
+
+    return `${Number(value).toFixed(1)}%`;
   };
 
   return (
@@ -161,7 +216,7 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
 
       {/* ================= 우측 하얀색 제어 사이드바 영역 ================= */}
       {isSidebarOpen && (
-        <div className="w-[380px] bg-white text-slate-800 h-full border-l border-slate-200 overflow-y-auto shadow-2xl z-30 shrink-0 animate-in fade-in slide-in-from-right duration-200 relative">
+        <div className="fixed top-0 right-0 h-screen w-[min(380px,calc(100vw-24px))] max-w-[calc(100vw-24px)] bg-white text-slate-800 border-l border-slate-200 overflow-y-auto shadow-2xl z-50 animate-in fade-in slide-in-from-right duration-200">
           <button onClick={() => setIsSidebarOpen(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xs">✕</button>
 
           <div className="p-8 flex flex-col gap-10 mt-4">
@@ -201,16 +256,28 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
             <section>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-bold text-[#002d5a]">Plan Specs</h3>
-                <span className="bg-teal-50 text-teal-700 px-2 py-1 text-[10px] font-bold rounded border border-teal-100">VALIDATED</span>
+                <span className="bg-teal-50 text-teal-700 px-2 py-1 text-[10px] font-bold rounded border border-teal-100">
+                  VALIDATED
+                </span>
               </div>
+
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-                  <p className="text-[10px] text-slate-500 font-bold mb-1 tracking-wider">TOTAL AREA</p>
-                  <p className="text-xl font-bold text-[#002d5a]">1,240 <span className="text-[12px]">m²</span></p>
+                  <p className="text-[10px] text-slate-500 font-bold mb-1 tracking-wider">
+                    TOTAL AREA
+                  </p>
+                  <p className="text-xl font-bold text-[#002d5a]">
+                    {formatArea(totalArea)} <span className="text-[12px]">m²</span>
+                  </p>
                 </div>
+
                 <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-                  <p className="text-[10px] text-slate-500 font-bold mb-1 tracking-wider">EFFICIENCY</p>
-                  <p className="text-xl font-bold text-[#002d5a]">94.2%</p>
+                  <p className="text-[10px] text-slate-500 font-bold mb-1 tracking-wider">
+                    SPACE RATIO
+                  </p>
+                  <p className="text-xl font-bold text-[#002d5a]">
+                    {formatPercent(spaceRatio)}
+                  </p>
                 </div>
               </div>
             </section>
@@ -219,30 +286,30 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
               <h3 className="text-lg font-bold text-[#002d5a] mb-4">CAD Export</h3>
               <div className="flex gap-2">
                 <button
-                  onClick={() => handleCadExport('autocad')}
-                  disabled={!designOutput?.dxfPath || !!cadExportTarget}
+                  onClick={() => handleOpenInCad('autocad')}
+                  disabled={isOpeningCad}
                   className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
                 >
-                  {cadExportTarget === 'autocad' ? <Loader2 className="animate-spin" size={14} /> : null}
+                  {cadOpenTarget === 'autocad' ? <Loader2 className="animate-spin" size={14} /> : null}
                   AUTOCAD
                 </button>
                 <button
-                  onClick={() => handleCadExport('rhino')}
-                  disabled={!designOutput?.dxfPath || !!cadExportTarget}
+                  onClick={() => handleOpenInCad('qcad')}
+                  disabled={isOpeningCad}
                   className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
                 >
-                  {cadExportTarget === 'rhino' ? <Loader2 className="animate-spin" size={14} /> : null}
-                  RHINO
+                  {cadOpenTarget === 'qcad' ? <Loader2 className="animate-spin" size={14} /> : null}
+                  QCAD
                 </button>
               </div>
-              {cadExportMessage && (
-                <p className="mt-3 text-[11px] text-slate-600 leading-relaxed">{cadExportMessage}</p>
+              {cadOpenMessage && (
+                <p className="mt-3 text-[11px] text-slate-600 leading-relaxed">{cadOpenMessage}</p>
               )}
             </section>
 
             <section>
               <h3 className="text-lg font-bold text-[#002d5a] mb-2">3D Modeling</h3>
-              <p className="text-xs text-slate-500 mb-4">Create a Rhino-based 3D model from the generated floor plan.</p>
+              <p className="text-xs text-slate-500 mb-4">도면을 토대로 Rhino 기반 3D 모델링을 생성합니다.</p>
               
               <button 
                 onClick={() => setModelingStep('format_selection')}

@@ -1045,6 +1045,7 @@ def _add_simple_doors(msp, params: Dict[str, Any]) -> int:
     living = None
     kitchen = None
     bedrooms = []
+    bathrooms = []
 
     for room in rooms:
         room_type = str(room.get("room_type", "")).lower()
@@ -1057,6 +1058,8 @@ def _add_simple_doors(msp, params: Dict[str, Any]) -> int:
             kitchen = room
         elif value == "bedroom":
             bedrooms.append(room)
+        elif value == "bathroom":
+            bathrooms.append(room)
 
     if living is None:
         living = max(rooms, key=lambda r: float(r.get("area", 0.0)))
@@ -1202,6 +1205,10 @@ def _add_simple_doors(msp, params: Dict[str, Any]) -> int:
         added += _place_door_to_room(bedroom)
 
     # 3. entrance door
+    if params.get("add_entrance_door", True):
+        added += _place_entrance_door()
+
+    # 4. entrance door
     if params.get("add_entrance_door", True):
         added += _place_entrance_door()
 

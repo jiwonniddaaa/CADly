@@ -7,7 +7,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 class SiteAnalyzer:
-    def __init__(self, public_client, dataset_path: str, db_path: str = "./data/mart_building_data.db"):
+    def __init__(self, public_client, dataset_path: str, db_path: str = "/workspace/db/data/mart_building_data.db"):
         self.client = public_client
         self.dataset_path = dataset_path
         self.db_path = db_path

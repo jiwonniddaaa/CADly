@@ -49,7 +49,7 @@ export const cadlyApi = {
   },
 
   // MCP로 로컬 CAD 앱에서 DXF 열기
-  importToCad: async (projectId, targetCad, dxfPath = null) => {
+  openInCad: async (projectId, targetCad, dxfPath = null) => {
     const response = await apiClient.post('/cad/import', {
       session_id: projectId,
       target_cad: targetCad,

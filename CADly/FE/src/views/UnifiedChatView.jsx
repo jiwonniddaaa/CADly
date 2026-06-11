@@ -39,6 +39,8 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
 
     try {
       const response = await cadlyApi.sendMessage(textToSend, projectId, imageToSend);
+      console.log("FULL CHAT RESPONSE:", response);
+      console.log("RESPONSE METRICS:", response.metrics);
 
       const agentMsg = {
         sender: 'agent',
@@ -57,6 +59,7 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
           svgPath: response.svg_path || null,
           dxfPath: response.dxf_path || null,
           status: response.design_status || null,
+          metrics: response.metrics || null,
         });
       }
 
