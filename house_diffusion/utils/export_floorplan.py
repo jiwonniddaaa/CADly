@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import drawSvg as drawsvg
+import drawsvg
 
 
 DEFAULT_ID_COLOR = {
@@ -27,6 +27,54 @@ def _to_px(point, resolution: int = 256):
     return float(point[0]), float(point[1])
 
 
+def _to_scalar(value):
+    """
+    Convert DataLoader-collated values like ['living'] or tensor([1])
+    into plain scalar values.
+    """
+    if hasattr(value, "item"):
+        return value.item()
+
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1:
+            return _to_scalar(value[0])
+        return [_to_scalar(v) for v in value]
+
+    return value
+
+
+def _compute_bbox(polygon):
+    """
+    polygon: [[x, y], [x, y], ...]
+    return: [min_x, min_y, max_x, max_y]
+    """
+    if not polygon:
+        return None
+
+    xs = [float(p[0]) for p in polygon]
+    ys = [float(p[1]) for p in polygon]
+
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def _polygon_area(polygon):
+    """
+    Shoelace formula.
+    """
+    if not polygon or len(polygon) < 3:
+        return 0.0
+
+    area = 0.0
+    n = len(polygon)
+
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        area += float(x1) * float(y2) - float(x2) * float(y1)
+
+    return abs(area) / 2.0
+
+    
 def extract_polygons_from_sample(
     sample_final,
     model_kwargs: dict[str, Any],
@@ -91,15 +139,56 @@ def extract_polygons_from_sample(
 
 
 def attach_room_labels(polys, room_meta):
-    by_index = {int(r["index"]) + 1: r for r in room_meta}  # HouseDiffusion room index is 1-based.
+    """
+    Attach room metadata to generated polygons.
+
+    room_meta may contain DataLoader-collated values such as ['living'].
+    This function normalizes them into scalar values.
+    """
+    by_index = {}
+
+    for r in room_meta:
+        if not isinstance(r, dict):
+            continue
+
+        raw_index = r.get("index", r.get("room_index", None))
+
+        if raw_index is None:
+            continue
+
+        try:
+            # HouseDiffusion room index is 1-based.
+            index = int(_to_scalar(raw_index)) + 1
+        except Exception:
+            continue
+
+        by_index[index] = r
+
     labeled = []
+
     for poly in polys:
-        meta = by_index.get(int(poly["room_index"]), {})
+        room_index = int(poly["room_index"])
+        meta = by_index.get(room_index, {})
+
+        room_id = _to_scalar(
+            meta.get("room_id", meta.get("id", f"room_{room_index}"))
+        )
+        label = _to_scalar(
+            meta.get("label", room_id)
+        )
+        room_type = _to_scalar(
+            meta.get("room_type", meta.get("type", poly.get("room_type")))
+        )
+
         labeled.append({
             **poly,
-            "room_id": meta.get("id", f"room_{poly['room_index']}"),
-            "label": meta.get("label", f"room_{poly['room_index']}"),
+            "room_id": room_id,
+            "id": room_id,
+            "label": label,
+            "room_type": int(room_type) if room_type is not None else int(poly["room_type"]),
+            "type": int(room_type) if room_type is not None else int(poly["room_type"]),
         })
+
     return labeled
 
 
@@ -130,25 +219,61 @@ def save_svg(polys, out_path: str | Path, resolution: int = 256, colors=None):
         cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
         drawing.append(drawsvg.Text(poly.get("label", ""), 8, cx, cy, center=True, fill="black"))
 
-    drawing.saveSvg(str(out_path))
+    drawing.save_svg(str(out_path))
 
 
 def save_room_labels_json(polys, out_path: str | Path):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "rooms": [
+
+    rooms = []
+
+    for p in polys:
+        polygon = [[float(x), float(y)] for x, y in p["points"]]
+
+        bbox = _compute_bbox(polygon)
+        area_px = _polygon_area(polygon)
+
+        room_id = _to_scalar(p.get("room_id", p.get("id")))
+        label = _to_scalar(p.get("label", room_id))
+        room_type = _to_scalar(p.get("room_type", p.get("type")))
+
+        is_degenerate = (
+            bbox is None
+            or len(polygon) < 3
+            or area_px <= 1e-6
+        )
+
+        rooms.append(
             {
-                "room_id": p.get("room_id"),
-                "label": p.get("label"),
-                "room_type": int(p["room_type"]),
+                "room_id": room_id,
+                "id": room_id,
+
+                "label": label,
+
+                "room_type": int(room_type) if room_type is not None else None,
+                "type": int(room_type) if room_type is not None else None,
+
                 "room_index": int(p["room_index"]),
-                "polygon": [[float(x), float(y)] for x, y in p["points"]],
+
+                "polygon": polygon,
+                "bbox": bbox,
+                "area_px": area_px,
+
+                "point_count": len(polygon),
+                "is_closed": True,
+                "is_degenerate": bool(is_degenerate),
             }
-            for p in polys
-        ]
+        )
+
+    payload = {
+        "rooms": rooms
     }
-    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    out_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def save_dxf(polys, out_path: str | Path):
@@ -164,11 +289,14 @@ def save_dxf(polys, out_path: str | Path):
     msp = doc.modelspace()
 
     for poly in polys:
-        layer = str(poly.get("label", f"room_{poly['room_index']}"))[:255]
+        label = _to_scalar(poly.get("label", f"room_{poly['room_index']}"))
+        layer = str(label)[:255]
+        
         if layer not in doc.layers:
             doc.layers.add(layer)
 
         pts = [(float(x), float(y)) for x, y in poly["points"]]
+
         if pts[0] != pts[-1]:
             pts.append(pts[0])
 
@@ -176,8 +304,9 @@ def save_dxf(polys, out_path: str | Path):
 
         cx = sum(x for x, _ in pts[:-1]) / (len(pts) - 1)
         cy = sum(y for _, y in pts[:-1]) / (len(pts) - 1)
+        
         msp.add_text(
-            poly.get("label", ""),
+            str(label),
             dxfattribs={"height": 4, "layer": layer},
         ).set_placement((cx, cy))
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="256" height="256" viewBox="0 0 256 256" displayInline="False">
+<defs>
+</defs>
+<rect x="0" y="0" width="256" height="256" fill="white" />
+<path d="M152.0,180.0 L77.0,180.0 L77.0,101.0 L152.0,101.0 Z" fill="#EE4D4D" fill-opacity="0.55" stroke="black" stroke-width="1" />
+<text x="114.5" y="140.5" font-size="8" fill="black" text-anchor="middle" dominant-baseline="central">living_room</text>
+<path d="M184.0,180.0 L153.0,180.0 L153.0,101.0 L184.0,101.0 Z" fill="#FFD274" fill-opacity="0.55" stroke="black" stroke-width="1" />
+<text x="168.5" y="140.5" font-size="8" fill="black" text-anchor="middle" dominant-baseline="central">kitchen</text>
+<path d="M156.0,100.0 L125.0,100.0 L125.0,93.0 L156.0,93.0 Z" fill="#C67C7B" fill-opacity="0.55" stroke="black" stroke-width="1" />
+<text x="140.5" y="96.5" font-size="8" fill="black" text-anchor="middle" dominant-baseline="central">bedroom</text>
+<path d="M124.0,100.0 L81.0,100.0 L81.0,85.0 L124.0,85.0 Z" fill="#BEBEBE" fill-opacity="0.55" stroke="black" stroke-width="1" />
+<text x="102.5" y="92.5" font-size="8" fill="black" text-anchor="middle" dominant-baseline="central">bathroom</text>
+</svg>

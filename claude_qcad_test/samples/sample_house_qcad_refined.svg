@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+  width="820"
+  height="739"
+  viewBox="0 0 820 739">
+  <rect width="100%" height="100%" fill="white"/>
+  <polygon points="554.67,50.00 50.00,50.00 50.00,581.59 554.67,581.59" fill="#f4a3a8" stroke="#111111" stroke-width="2" /><polygon points="770.00,50.00 561.40,50.00 561.40,581.59 770.00,581.59" fill="#ffe3a3" stroke="#111111" stroke-width="2" /><polygon points="581.59,588.32 372.99,588.32 372.99,635.42 581.59,635.42" fill="#f6c7c7" stroke="#111111" stroke-width="2" /><polygon points="366.26,588.32 76.92,588.32 76.92,689.25 366.26,689.25" fill="#d9d9d9" stroke="#111111" stroke-width="2" />
+  
+  <text x="302.34" y="315.79" font-size="22.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" fill="#1f4ed8">living_room</text><text x="665.70" y="315.79" font-size="22.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" fill="#1f4ed8">kitchen</text><text x="477.29" y="611.87" font-size="22.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" fill="#1f4ed8">bedroom</text><text x="221.59" y="638.79" font-size="22.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" fill="#1f4ed8">bathroom</text>
+</svg>

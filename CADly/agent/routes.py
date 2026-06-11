@@ -1,9 +1,8 @@
-# reference_agent/api/routes.py
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
-from reference_agent.api.chat_service import run_cadly_chat
+from CADly.agent.chat_service import run_cadly_chat
 
 router = APIRouter()
 

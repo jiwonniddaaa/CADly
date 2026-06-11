@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage
 
 from planning.orchestrator import build_planning_orchestrator
-from reference_agent.api.session_utils import (
+from CADly.agent.session_utils import (
     EPHEMERAL_STATE_KEYS,
     build_persisted_fields,
     get_last_ai_text,
@@ -116,11 +116,28 @@ async def run_planning_chat(
         messages = [*messages, *result_messages]
 
     response_text = get_last_ai_text(messages) or "응답을 생성하지 못했습니다."
-    references = result.get("references", [])
-    if not isinstance(references, list):
-        references = []
-
     route = result.get("route", "") or ""
+
+    stored_references = result.get("references", [])
+    if not isinstance(stored_references, list):
+        stored_references = []
+    
+    previous_references = planning_fields.get("references", [])
+    if not isinstance(previous_references, list):
+        previous_references = []
+
+    reference_routes = {
+        "reference",
+        "reference_agent",
+        "search",
+        "image_reference",
+    }
+
+    has_new_reference = stored_references != previous_references
+    should_display_references = route in reference_routes and has_new_reference
+
+    output_references = stored_references if should_display_references else []
+    
     active_orchestrator = result.get("active_orchestrator", prev_active) or "planning"
     design_state = result.get("design_state") if active_orchestrator == "design" else prev_design_state
     if not isinstance(design_state, dict):
@@ -137,10 +154,11 @@ async def run_planning_chat(
 
     return {
         "response": response_text,
-        "search_results": references,
-        "references": references,
+        "search_results": output_references,
+        "references": output_references,
+        "display_references": should_display_references,
         "route": route,
-        "agent_type": _resolve_agent_type(route, references),
+        "agent_type": _resolve_agent_type(route, output_references),
         "planning_state": updated_planning_state,
         "concept_result": concept_value,
         "concept_keywords": result.get("concept_keywords", []),

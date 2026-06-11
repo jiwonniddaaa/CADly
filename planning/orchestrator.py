@@ -437,6 +437,13 @@ Building type normalization:
 - 공동주택, 아파트, 다세대주택, 세대형 주거 -> multi_family
 - 상가, 근린생활시설, 문화시설, 업무시설, 그 외 -> non_residential
 
+Area extraction:
+- If the user says "거실 30", set the area of the existing living_room space to 30.
+- If no unit is specified, assume square meters.
+- When updating area, preserve the existing room id if a matching room already exists.
+- Do not create duplicate rooms just because the user gives an area.
+- Match Korean room names to existing room_type values.
+
 Return only JSON:
 {
   "spaces": [

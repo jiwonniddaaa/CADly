@@ -253,6 +253,7 @@ class SiteAnalyzer:
                     "strct_name": strct_name if strct_name else "철근콘크리트 구조"
                 },
                 "diffusion_output": {
+                    "site_area_m2": site_area_m2,
                     "building_area_m2": building_area_m2,
                     "floor_area_m2": floor_area_m2,
                     "common_area_m2": common_area_m2,

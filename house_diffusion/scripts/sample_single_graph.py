@@ -29,8 +29,8 @@ from house_diffusion.script_util import (
     update_arg_parser,
 )
 
-from single_graph_dataset import load_single_graph_data
-from export_floorplan import export_prediction
+from house_diffusion.single_graph_dataset import load_single_graph_data
+from utils.export_floorplan import export_prediction
 
 
 def _to_cuda_model_kwargs(model_kwargs):
