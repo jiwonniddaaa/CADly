@@ -1,7 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
+from CADly.agent.cad_service import CadTarget, import_dxf_to_cad, read_dxf_bytes
 from CADly.agent.chat_service import run_cadly_chat
 
 router = APIRouter()
@@ -45,4 +47,34 @@ async def cadly_chat(req: ChatRequest):
         image_path=req.image_path,
         image_base64=req.image_base64,
         image_media_type=req.image_media_type,
+    )
+
+
+class CadImportRequest(BaseModel):
+    dxf_path: str
+    target_cad: CadTarget = "autocad"
+    rhino_exe_path: Optional[str] = None
+
+
+@router.post("/cad/import")
+async def cad_import(req: CadImportRequest):
+    """MCP로 로컬 CAD 앱(AutoCAD/Rhino)에서 DXF를 엽니다."""
+    return import_dxf_to_cad(
+        dxf_path=req.dxf_path,
+        target_cad=req.target_cad,
+        rhino_exe_path=req.rhino_exe_path,
+    )
+
+
+@router.get("/cad/dxf")
+async def download_dxf(dxf_path: str = Query(..., description="서버에 저장된 DXF 절대 경로")):
+    try:
+        content, filename = read_dxf_bytes(dxf_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return Response(
+        content=content,
+        media_type="application/dxf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

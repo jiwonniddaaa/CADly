@@ -1,8 +1,9 @@
 # CADly/CADly_BE/app/services/agent_service.py
 import base64
 import mimetypes
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
 import httpx
-from typing import Dict, Any
 from fastapi import UploadFile
 from app.core.config import AI_AGENT_URL as CONFIG_AI_AGENT_URL
 
@@ -42,6 +43,26 @@ _LEGACY_PLANNING_KEYS = (
 
 def _get_session_state(session_id: str) -> Dict[str, Any]:
     return _SESSION_STATES.setdefault(session_id, {})
+
+
+def resolve_session_dxf_path(
+    session_id: str,
+    override: Optional[str] = None,
+) -> Optional[str]:
+    if override and override.strip():
+        return override.strip()
+
+    state = _get_session_state(session_id)
+    design_state = state.get("design_state")
+    if isinstance(design_state, dict):
+        dxf_path = design_state.get("dxf_path")
+        if dxf_path:
+            return str(dxf_path)
+
+    top_level = state.get("dxf_path")
+    if top_level:
+        return str(top_level)
+    return None
 
 
 def clear_session_state(session_id: str) -> None:
@@ -112,6 +133,41 @@ async def send_to_agent(message: str, session_id: str, file: UploadFile | None =
         agent_response = response.json()
         agent_response["_state"] = _update_session_state(session_id, agent_response)
         return agent_response
+
+
+async def import_dxf_to_cad(
+    *,
+    dxf_path: str,
+    target_cad: str,
+) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            f"{AI_AGENT_URL}/cad/import",
+            json={
+                "dxf_path": dxf_path,
+                "target_cad": target_cad,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def download_dxf_from_agent(dxf_path: str) -> Tuple[bytes, str]:
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.get(
+            f"{AI_AGENT_URL}/cad/dxf",
+            params={"dxf_path": dxf_path},
+        )
+        response.raise_for_status()
+
+    filename = Path(dxf_path).name or "floorplan.dxf"
+    content_disposition = response.headers.get("content-disposition", "")
+    if "filename=" in content_disposition:
+        raw_name = content_disposition.split("filename=", 1)[1].strip().strip('"')
+        if raw_name:
+            filename = raw_name
+    return response.content, filename
+
 
 async def generate_3d_file(project_id: str, format: str) -> bytes:
     """무거운 3D 파일(바이너리) 생성 요청 (기존 코드 완벽 유지)"""

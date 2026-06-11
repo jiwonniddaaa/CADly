@@ -46,5 +46,27 @@ export const cadlyApi = {
       responseType: 'blob'
     });
     return response.data;
-  }
+  },
+
+  // MCP로 로컬 CAD 앱에서 DXF 열기
+  importToCad: async (projectId, targetCad, dxfPath = null) => {
+    const response = await apiClient.post('/cad/import', {
+      session_id: projectId,
+      target_cad: targetCad,
+      ...(dxfPath ? { dxf_path: dxfPath } : {}),
+    });
+    return response.data;
+  },
+
+  // DXF 파일 다운로드 (CAD 앱 열기 실패 시 fallback)
+  downloadDxf: async (projectId, dxfPath = null) => {
+    const response = await apiClient.get('/cad/dxf', {
+      params: {
+        session_id: projectId,
+        ...(dxfPath ? { dxf_path: dxfPath } : {}),
+      },
+      responseType: 'blob',
+    });
+    return response.data;
+  },
 };

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.chat import router as chat_router
+from app.routers.cad import router as cad_router
 # TODO: Agent 서버의 3D 생성 API가 확정되면 다시 활성화합니다.
 # from app.routers.generate import router as generate_router
 
@@ -20,6 +21,12 @@ app.include_router(
     chat_router, 
     prefix="/api/v1/chat", 
     tags=["Chat"]
+)
+
+app.include_router(
+    cad_router,
+    prefix="/api/v1/cad",
+    tags=["CAD"],
 )
 
 # TODO: Agent 서버의 /agent/generate3d 제공 여부 확인 후 재연결합니다.

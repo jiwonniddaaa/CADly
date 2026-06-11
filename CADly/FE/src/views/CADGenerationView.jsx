@@ -10,19 +10,56 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
   const [modelingStep, setModelingStep] = useState('initial');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedFile, setGeneratedFile] = useState(null);
+  const [cadExportTarget, setCadExportTarget] = useState(null);
+  const [cadExportMessage, setCadExportMessage] = useState('');
 
-  // 2D SVG 다운로드 함수
-  const handleExportFile = () => {
-    if (!cadSvgContent) return;
-    const blob = new Blob([cadSvgContent], { type: 'image/svg+xml;charset=utf-8' });
+  const triggerBlobDownload = (blob, filename) => {
     const downloadUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = downloadUrl;
-    link.download = `floorplan_rev_01.svg`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(downloadUrl);
+  };
+
+  const downloadDxfFallback = async () => {
+    const blobData = await cadlyApi.downloadDxf(projectId, designOutput?.dxfPath);
+    const filename = designOutput?.dxfPath
+      ? designOutput.dxfPath.split('/').pop()
+      : 'floorplan.dxf';
+    triggerBlobDownload(blobData, filename);
+    setCadExportMessage('CAD 앱 열기에 실패해 DXF 파일을 다운로드했습니다.');
+  };
+
+  const handleCadExport = async (targetCad) => {
+    if (!designOutput?.dxfPath) {
+      alert('DXF 파일이 없습니다. 도면 생성을 먼저 완료해 주세요.');
+      return;
+    }
+
+    setCadExportTarget(targetCad);
+    setCadExportMessage('');
+    try {
+      const result = await cadlyApi.importToCad(projectId, targetCad, designOutput.dxfPath);
+      if (result.ok) {
+        setCadExportMessage(result.message || 'CAD 앱에서 DXF를 열었습니다.');
+        return;
+      }
+
+      await downloadDxfFallback();
+    } catch (error) {
+      console.error('CAD export failed:', error);
+      try {
+        await downloadDxfFallback();
+      } catch (downloadError) {
+        console.error('DXF download fallback failed:', downloadError);
+        alert('CAD 연동 및 DXF 다운로드에 모두 실패했습니다.');
+      }
+    } finally {
+      setCadExportTarget(null);
+    }
   };
 
   // 3D 파일 생성용 FastAPI 연동 함수
@@ -45,9 +82,10 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
     }
   };
 
-  // 3D 파일 로컬 다운로드 함수
+  // 3D 파일 로컬 다운로드 (추후 포맷별 후처리·메타데이터 확장 지점)
   const handleDownload3D = () => {
     if (!generatedFile) return;
+
     const downloadUrl = URL.createObjectURL(generatedFile.blob);
     const link = document.createElement('a');
     link.href = downloadUrl;
@@ -180,9 +218,26 @@ const CADGenerationView = ({ onNavigateToChat, cadSvgContent, designOutput, proj
             <section>
               <h3 className="text-lg font-bold text-[#002d5a] mb-4">CAD Export</h3>
               <div className="flex gap-2">
-                <button onClick={handleExportFile} className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm">AUTOCAD</button>
-                <button className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm">RHINO</button>
+                <button
+                  onClick={() => handleCadExport('autocad')}
+                  disabled={!designOutput?.dxfPath || !!cadExportTarget}
+                  className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
+                >
+                  {cadExportTarget === 'autocad' ? <Loader2 className="animate-spin" size={14} /> : null}
+                  AUTOCAD
+                </button>
+                <button
+                  onClick={() => handleCadExport('rhino')}
+                  disabled={!designOutput?.dxfPath || !!cadExportTarget}
+                  className="flex-1 bg-[#002d5a] text-white py-3 rounded text-xs font-bold tracking-wider hover:bg-[#001f3f] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
+                >
+                  {cadExportTarget === 'rhino' ? <Loader2 className="animate-spin" size={14} /> : null}
+                  RHINO
+                </button>
               </div>
+              {cadExportMessage && (
+                <p className="mt-3 text-[11px] text-slate-600 leading-relaxed">{cadExportMessage}</p>
+              )}
             </section>
 
             <section>
