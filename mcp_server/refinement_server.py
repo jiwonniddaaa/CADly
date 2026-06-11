@@ -78,33 +78,72 @@ def apply_refinement_plan(
 
     The plan_json must be a JSON object with an "actions" list.
 
-    Important:
-    If the drawing is a simple HouseDiffusion-style layout with only room polygons
-    and text labels, use enhance_cad_style.
+    This tool can be used for:
+    1. broad rule-based CAD-style enhancement
+    2. small cleanup and geometry repair
+
+    Important pipeline policy:
+    - If the DXF already contains CAD-style helper layers such as WALL, DOOR, WINDOW, or DIMENSION,
+      do not call enhance_cad_style again.
+    - Do not add title blocks.
+    - Do not add room area labels.
+    - Do not add fixtures unless explicitly requested.
+    - Do not duplicate room labels, doors, windows, or dimensions.
 
     Supported actions:
     - enhance_cad_style:
-      Adds CAD-style wall outline, simple doors, simple windows,
-      basic dimensions, and basic fixtures.
-    - normalize_layers
-    - align_walls
-    - add_room_labels
-    - add_simple_doors
-    - add_simple_windows
-    - add_basic_dimensions
-    - add_wall_outline
-    - add_basic_fixtures
+      Adds CAD-style wall outlines, simple doors, simple windows, and basic dimensions.
+      Use this only when the drawing is still a simple HouseDiffusion-style layout.
 
-    Recommended plan for under-detailed HouseDiffusion output:
+    - normalize_layers:
+      Safely normalize helper layers.
+      Do not destroy meaningful room layers such as living_room, kitchen, bedroom, bathroom.
+
+    - align_walls:
+      Align nearly horizontal or vertical LINE entities when off-axis wall issues are detected.
+
+    - add_room_labels:
+      Add room labels only when room labels are missing.
+
+    - add_wall_outline:
+      Add wall-like outline lines.
+
+    - add_simple_doors:
+      Add simple door symbols.
+
+    - add_simple_windows:
+      Add simple window symbols.
+
+    - add_basic_dimensions:
+      Add basic exterior dimensions.
+
+    - add_basic_fixtures:
+      Add simple fixtures only when explicitly requested.
+
+    - remove_tiny_lines:
+      Remove zero-length or nearly zero-length LINE entities.
+
+    - normalize_text_size:
+      Normalize text height for readability.
+
+    - clean_cad_layers:
+      Clean helper entity layers without changing room-type layers.
+
+    - remove_duplicate_elements:
+      Remove exact duplicate LINE entities.
+
+    Recommended plan for an already enhanced DXF with no repair needed:
+    {
+      "actions": []
+    }
+
+    Recommended cleanup plan for an already enhanced DXF:
     {
       "actions": [
-        {
-          "tool": "enhance_cad_style",
-          "params": {
-            "scale_factor": 100,
-            "add_fixtures": false,
-          }
-        }
+        {"tool": "remove_tiny_lines", "params": {"min_length": 0.5}},
+        {"tool": "normalize_text_size", "params": {}},
+        {"tool": "clean_cad_layers", "params": {}},
+        {"tool": "remove_duplicate_elements", "params": {}}
       ]
     }
 

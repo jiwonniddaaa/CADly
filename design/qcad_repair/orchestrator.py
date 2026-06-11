@@ -125,40 +125,62 @@ Run an autonomous QCAD refinement process.
 Input DXF:
 {input_path}
 
-This input DXF has already been processed by a rule-based CAD style enhancer.
-It may contain added wall outlines, simple doors, windows, dimensions, and other CAD-style drafting elements.
+This input DXF may already have been processed by a rule-based CAD style enhancer.
 
-Your role is not to redesign the floorplan.
-Your role is to inspect, validate, and safely repair the enhanced DXF if necessary.
+The rule-based enhancer is responsible for adding:
+
+* wall outlines
+* simple doors
+* simple windows
+* basic dimensions
+
+Your role:
+
+* inspect the enhanced DXF
+* validate its geometry
+* apply only small safe cleanup or repair actions if needed
+* avoid duplicate enhancement elements
+* render the final preview
 
 Files:
-- input_dxf: {input_path}
-- room_label_json: {room_label_path if room_label_path else ""}
-- output_dxf: {refined_dxf}
-- output_svg: {refined_svg}
-- backend: {backend}
+
+* input_dxf: {input_path}
+* room_label_json: {room_label_path if room_label_path else ""}
+* output_dxf: {refined_dxf}
+* output_svg: {refined_svg}
+* backend: {backend}
 
 Required process:
+
 1. Call inspect_dxf on input_dxf.
 2. Call validate_geometry on input_dxf.
-3. Decide whether a small repair is necessary.
+3. Decide whether a small repair or cleanup is necessary.
 4. If repair is necessary, call apply_refinement_plan.
-   - Use output_dxf as the output path.
-   - Use backend: {backend}.
-   - Prefer small safe actions such as align_walls or normalize_layers.
-   - Avoid duplicate labels.
-   - Avoid destructive layer normalization if room layers are meaningful.
+
+   * Use output_dxf as the output path.
+   * Use backend: {backend}.
+   * Prefer cleanup actions such as remove_tiny_lines, normalize_text_size, clean_cad_layers, or remove_duplicate_elements.
+   * Use align_walls only if off-axis walls are detected.
+   * Avoid duplicate room labels.
+   * Avoid duplicate doors, windows, and dimensions.
+   * Avoid destructive layer normalization if room layers are meaningful.
 5. If no repair is necessary, call apply_refinement_plan with an empty actions list to create output_dxf.
 6. Call validate_geometry on output_dxf.
 7. Call render_preview using output_dxf and output_svg.
 8. Return a concise final summary.
 
-Important:
-- Do not run enhance_cad_style again unless the enhanced DXF is still clearly under-detailed.
-- Do not add duplicate doors, windows, dimensions.
-- Preserve the existing room topology.
-- Do not invent new rooms.
-"""
+Important constraints:
+
+* Do not redesign the floorplan.
+* Do not invent rooms.
+* Do not delete rooms.
+* Do not add title blocks.
+* Do not add room area labels.
+* Do not add fixtures unless explicitly requested.
+* Do not call enhance_cad_style again if CAD-style elements already exist.
+* Do not add more doors or windows if DOOR or WINDOW layers already exist.
+* Preserve the original room topology.
+  """
 
     
     messages: List[Dict[str, Any]] = [
