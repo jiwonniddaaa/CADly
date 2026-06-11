@@ -361,7 +361,7 @@ def derive_workflow_stage(state: Dict[str, Any]) -> WorkflowStage:
     if pending == "area_abnormal_confirmation":
         return "awaiting_area_abnormal_confirm"
 
-    if state.get("design_payload") is not None or is_awaiting_design_handoff_confirmagtion(state):
+    if state.get("design_payload") is not None or is_awaiting_design_handoff_confirmation(state):
         return "awaiting_design_confirm"
 
     spaces = state.get("spaces") or []

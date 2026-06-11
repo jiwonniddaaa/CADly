@@ -106,7 +106,7 @@ class PlanningAgent:
     def _limited_site_area_mode_prompt() -> str:
         return (
             "세부 공간 면적이 비어 있습니다.\n\n"
-            "대지/법규 정보가 일부 부족해, 추천 시 전체 면적은 공간 구성 기준으로 추정됩니다. "
+            "대지 분석이 없거나 법규 정보가 부족해, 추천 시 전체 면적은 공간 구성 기준으로 추정됩니다. "
             "대지 분석을 완료하면 건축면적·법규 상한을 반영해 더 정확해집니다.\n\n"
             "원하시는 방식을 선택해 주세요.\n"
             "1) 대지 분석 진행\n"
@@ -166,10 +166,8 @@ class PlanningAgent:
         self._check_edges(spaces, edges, missing)
         self._check_output_name(output_name, missing)
         self._check_building_type(building_type, missing)
-        self._check_site_analysis(site_analysis, building_type, missing)
 
-        ready_for_design = len(missing) == 0
-        if not ready_for_design:
+        if missing:
             return {
                 "ready_for_design": False,
                 "missing_requirements": missing,
@@ -177,7 +175,7 @@ class PlanningAgent:
                 "messages": [AIMessage(content=self._build_missing_message(missing))],
             }
 
-        # 3) 세부 면적이 비어있는 경우에만 사용자 의사 질문
+        # 3) 세부 면적이 비어 있으면 대지 분석 유무와 관계없이 면적 설정 흐름으로 진행
         if self._has_missing_space_area(state):
             if not self._has_recommendation_inputs(state):
                 return {
@@ -205,7 +203,25 @@ class PlanningAgent:
                 ],
             }
 
-        # 4) 면적이 모두 있으면 바로 다음 단계로
+        # 4) 면적이 모두 채워진 뒤에만 대지 분석을 필수로 확인
+        site_missing: List[str] = []
+        self._check_site_analysis(site_analysis, building_type, site_missing)
+        if site_missing:
+            return {
+                "ready_for_design": False,
+                "missing_requirements": site_missing,
+                "next_step": "end",
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "공간별 면적은 준비되었습니다.\n"
+                            "도면 생성을 위해 대지 분석이 필요합니다. "
+                            "분석할 주소나 지번을 알려주세요. (예: 역삼동 747)"
+                        )
+                    )
+                ],
+            }
+
         return {
             "ready_for_design": True,
             "missing_requirements": [],
