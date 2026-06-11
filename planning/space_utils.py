@@ -41,6 +41,16 @@ def outside_boundary_space() -> Dict[str, Any]:
     }
 
 
+def sum_indoor_space_areas(spaces: List[Dict[str, Any]]) -> float | None:
+    """실내 공간 면적 합. 대지 분석 없이 도면 생성 기준 면적으로 쓸 때 사용."""
+    total = 0.0
+    for space in indoor_spaces(spaces):
+        area = space.get("area")
+        if isinstance(area, (int, float)) and area > 0:
+            total += float(area)
+    return round(total, 1) if total > 0 else None
+
+
 def apply_single_room_generator_fallback(
     spaces: List[Dict[str, Any]],
     edges: List[List[str]],

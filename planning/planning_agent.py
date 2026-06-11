@@ -55,6 +55,7 @@ class PlanningState(TypedDict, total=False):
     next_step: Literal["end", "area_recommendation", "build_design_payload"]
     pending_action: PendingAction
     allow_abnormal_area: bool
+    proceed_without_site_analysis: bool
 
 
 class PlanningAgent:
@@ -92,6 +93,9 @@ class PlanningAgent:
             "site_analysis": state.get("site_analysis"),
             "pending_action": normalize_pending_action(state),
             "allow_abnormal_area": bool(state.get("allow_abnormal_area", False)),
+            "proceed_without_site_analysis": bool(
+                state.get("proceed_without_site_analysis", False)
+            ),
         }
         return self.app.invoke(initial_state)
 
@@ -136,6 +140,9 @@ class PlanningAgent:
                 return {
                     **clear_pending(),
                     "next_step": "area_recommendation",
+                    "proceed_without_site_analysis": not self._has_recommendation_inputs(
+                        state
+                    ),
                     "messages": [
                         AIMessage(content="추천값(기본값)으로 계산하여 반영하겠습니다.")
                     ],
@@ -203,7 +210,15 @@ class PlanningAgent:
                 ],
             }
 
-        # 4) 면적이 모두 채워진 뒤에만 대지 분석을 필수로 확인
+        # 4) 면적 확정 후 대지 분석 확인 (직접입력·추천값으로 진행한 경우는 생략)
+        if state.get("proceed_without_site_analysis"):
+            return {
+                "ready_for_design": True,
+                "missing_requirements": [],
+                "next_step": "build_design_payload",
+                **clear_pending(),
+            }
+
         site_missing: List[str] = []
         self._check_site_analysis(site_analysis, building_type, site_missing)
         if site_missing:
@@ -398,6 +413,7 @@ class PlanningAgent:
         if mode == "site_analysis":
             return {
                 **clear_pending(),
+                "proceed_without_site_analysis": False,
                 "next_step": "end",
                 "messages": [
                     AIMessage(
@@ -411,12 +427,14 @@ class PlanningAgent:
         if mode == "recommend":
             return {
                 **clear_pending(),
+                "proceed_without_site_analysis": limited_site,
                 "next_step": "area_recommendation",
                 "messages": [AIMessage(content="추천값을 계산해 반영하겠습니다.")],
             }
         if mode == "manual":
             return {
                 **set_pending("manual_area_input"),
+                "proceed_without_site_analysis": limited_site,
                 "next_step": "end",
                 "messages": [
                     AIMessage(content=self._manual_area_input_prompt())

@@ -26,6 +26,7 @@ from planning.space_utils import (
     apply_single_room_generator_fallback,
     indoor_spaces,
     strip_outside_edges,
+    sum_indoor_space_areas,
 )
 from planning.supervisor import (
     build_session_context,
@@ -127,6 +128,7 @@ class PlanningState(TypedDict, total=False):
     area_recommendation_result: Optional[Dict[str, Any]]
     next_step: Optional[str]
     pending_action: PendingAction
+    proceed_without_site_analysis: bool
 
     # [추가] 이미지 처리용 컨텍스트 정보
     image_path: Optional[str]
@@ -523,6 +525,10 @@ def planning_agent_node(state: PlanningState) -> PlanningState:
         "area_recommendation_result": result.get("area_recommendation_result"),
         "pending_action": resolve_pending_after_planning_agent(result, state),
         "next_step": result.get("next_step"),
+        "proceed_without_site_analysis": result.get(
+            "proceed_without_site_analysis",
+            state.get("proceed_without_site_analysis", False),
+        ),
         "messages": result.get("messages", []),
     }
 
@@ -548,6 +554,21 @@ def build_design_payload_node(state: PlanningState) -> PlanningState:
             "messages": [
                 AIMessage(
                     content="건물 유형이 명확하지 않아 도면을 생성할 수 없습니다. 단독주택인지 공동주택인지 알려주세요."
+                )
+            ],
+        }
+
+    if area_for_generation is None:
+        area_for_generation = sum_indoor_space_areas(payload_spaces)
+
+    if area_for_generation is None:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "도면 생성 기준 면적을 정할 수 없습니다. "
+                        "대지 분석을 진행하거나 공간별 면적을 입력해 주세요."
+                    )
                 )
             ],
         }
