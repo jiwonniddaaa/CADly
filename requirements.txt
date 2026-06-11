@@ -13,3 +13,6 @@ pydantic-settings
 python-dotenv
 Pillow
 pillow-heif
+mcp>=1.9.0
+ezdxf
+python-multipart

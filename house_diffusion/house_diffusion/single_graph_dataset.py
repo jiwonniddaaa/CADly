@@ -12,7 +12,7 @@ Expected JSON shape:
 {
   "rooms": [
     {"id": "living", "type": 1, "label": "Living Room", "corners": 4},
-    {"id": "kitchen", "type": 3, "label": "Kitchen", "corners": 4}
+    {"id": "kitchen", "type": 2, "label": "Kitchen", "corners": 4}
   ],
   "edges": [
     ["living", "kitchen"]

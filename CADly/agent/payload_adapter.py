@@ -1,19 +1,6 @@
 from typing import Any, Dict
 
-ROOM_TYPE_TO_ID = {
-    "outside": 0,
-    "living_room": 1,
-    "kitchen": 2,
-    "bedroom": 3,
-    "bathroom": 4,
-    "entrance": 5,
-    "balcony": 6,
-    "dining_room": 7,
-    "study_room": 8,
-    "storage": 9,
-    "corridor": 10,
-    "unknown": 11,
-}
+from planning.rplan_room_types import cadly_room_type_to_rplan_id
 
 
 def convert_design_payload_to_graph(design_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -35,7 +22,7 @@ def convert_design_payload_to_graph(design_payload: Dict[str, Any]) -> Dict[str,
         rooms.append(
             {
                 "id": str(room_id),
-                "type": ROOM_TYPE_TO_ID.get(room_type, ROOM_TYPE_TO_ID["unknown"]),
+                "type": cadly_room_type_to_rplan_id(room_type),
                 "label": room_type,
                 "room_type": room_type,
                 "area": space.get("area"),

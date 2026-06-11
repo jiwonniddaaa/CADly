@@ -1,8 +1,8 @@
 {
   "rooms": [
     {"id": "living", "type": 1, "label": "Living Room", "corners": 4},
-    {"id": "kitchen", "type": 3, "label": "Kitchen", "corners": 4},
-    {"id": "bedroom", "type": 2, "label": "Bedroom", "corners": 4},
+    {"id": "kitchen", "type": 2, "label": "Kitchen", "corners": 4},
+    {"id": "bedroom", "type": 3, "label": "Bedroom", "corners": 4},
     {"id": "bathroom", "type": 4, "label": "Bathroom", "corners": 4}
   ],
   "edges": [

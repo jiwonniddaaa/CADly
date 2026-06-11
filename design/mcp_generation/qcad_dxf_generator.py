@@ -10,17 +10,16 @@ import ezdxf
 
 
 ROOM_TYPE_LABELS = {
-    0: "living_room",
-    1: "kitchen",
-    2: "bedroom",
-    3: "bathroom",
-    4: "balcony",
-    5: "entrance",
-    6: "dining_room",
-    7: "study_room",
-    8: "storage",
-    9: "unknown",
-    10: "outside",
+    1: "living_room",
+    2: "kitchen",
+    3: "bedroom",
+    4: "bathroom",
+    5: "balcony",
+    6: "entrance",
+    7: "dining_room",
+    8: "study_room",
+    10: "storage",
+    16: "unknown",
 }
 
 # mm 단위 기준
@@ -42,7 +41,7 @@ def generate_dxf_from_graph_data(
     Expected graph_data:
     {
         "rooms": [
-            {"id": "living_room1", "type": 0, "area": 30.0},
+            {"id": "living_room1", "type": 1, "area": 30.0},
             ...
         ],
         "edges": [
@@ -67,7 +66,8 @@ def generate_dxf_from_graph_data(
 
     usable_rooms = [
         room for room in rooms
-        if room.get("type") != 10 and room.get("id") != "outside"
+        if str(room.get("id", "")) != "outside"
+        and str(room.get("room_type", "")).lower() != "outside"
     ]
 
     if not usable_rooms:
@@ -196,8 +196,8 @@ def _normalize_room_areas(
         normalized.append(
             {
                 "id": room.get("id", "room"),
-                "type": room.get("type", 9),
-                "room_type": ROOM_TYPE_LABELS.get(room.get("type", 9), "unknown"),
+                "type": room.get("type", 16),
+                "room_type": ROOM_TYPE_LABELS.get(room.get("type", 16), "unknown"),
                 "area": area,
             }
         )

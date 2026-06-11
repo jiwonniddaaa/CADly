@@ -22,6 +22,7 @@ from planning.pending_state import (
     resolve_pending_after_planning_agent,
 )
 from planning.planning_agent import PlanningAgent
+from planning.rplan_room_types import cadly_room_type_to_rplan_id
 from planning.space_utils import (
     apply_single_room_generator_fallback,
     indoor_spaces,
@@ -185,22 +186,6 @@ def _encode_image(image_path: str) -> Tuple[str, str]:
     image_data = base64.b64encode(path.read_bytes()).decode("utf-8")
     return image_data, media_type
 
-def room_type_to_label(room_type: str) -> int:
-    mapping = {
-        "living_room": 0,
-        "kitchen": 1,
-        "bedroom": 2,
-        "bathroom": 3,
-        "balcony": 4,
-        "entrance": 5,
-        "dining_room": 6,
-        "study_room": 7,
-        "storage": 8,
-        "unknown": 9,
-        "outside": 10,
-    }
-    return mapping.get(room_type, 9)
-
 def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
     spaces = payload["design_requirements"]["spaces"]
     edges = payload["design_requirements"]["edges"]
@@ -211,7 +196,7 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
         rooms.append(
             {
                 "id": space["id"],
-                "type": room_type_to_label(space["room_type"]),
+                "type": cadly_room_type_to_rplan_id(space["room_type"]),
                 "area": space.get("area"),
             }
         )
