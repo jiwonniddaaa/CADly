@@ -12,10 +12,17 @@ router = APIRouter()
 # 응답 모델은 기존 ChatResponse를 유지하되, 요청은 Form과 File로 받습니다.
 @router.post("/", response_model=ChatResponse, response_model_exclude_none=True)
 async def chat(
-    message: str = Form(...),
     session_id: str = Form(...),
-    file: UploadFile | None = File(None)
+    message: str = Form(default=""),
+    file: UploadFile | None = File(None),
 ):
+    has_file = file is not None and bool(file.filename)
+    if not message.strip() and not has_file:
+        raise HTTPException(
+            status_code=422,
+            detail="message 또는 file 중 하나는 필요합니다.",
+        )
+
     try:
         # 1. AI 에이전트로 데이터 전송 (이미지 파일 포함)
         agent_response = await send_to_agent(

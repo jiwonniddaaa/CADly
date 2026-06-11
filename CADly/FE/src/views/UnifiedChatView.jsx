@@ -152,7 +152,7 @@ const UnifiedChatView = ({ onNavigateToGeneration, currentView, setCadSvgContent
           <input
             type="text"
             className="flex-1 bg-transparent outline-none text-sm text-slate-700 placeholder-slate-400"
-            placeholder={attachedImage ? "이미지와 함께 보낼 메시지를 입력하세요..." : "Ask about site restrictions or request a massing plan..."}
+            placeholder={attachedImage ? "메시지 없이 이미지만내도 됩니다 (Enter 또는 전송)" : "Ask about site restrictions or request a massing plan..."}
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
             onKeyDown={handleKeyDown}
