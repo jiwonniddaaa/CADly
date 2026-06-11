@@ -106,13 +106,35 @@ def call_mcp_tool(
             "message": f"MCP tool call failed: {e}",
         }
 
-# CAD Import Tool
+_CAD_IMPORT_SERVER = "mcp_server.server"
+
+
+async def call_cad_import_tool_async(
+    tool_name: str,
+    arguments: Dict[str, Any],
+) -> Dict[str, Any]:
+    try:
+        return await _call_mcp_tool_async(
+            server_module=_CAD_IMPORT_SERVER,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "server_module": _CAD_IMPORT_SERVER,
+            "tool": tool_name,
+            "message": f"MCP tool call failed: {e}",
+        }
+
+
+# CAD Import Tool (sync callers: design pipeline nodes)
 def call_cad_import_tool(
     tool_name: str,
     arguments: Dict[str, Any],
 ) -> Dict[str, Any]:
     return call_mcp_tool(
-        server_module="mcp_server.server",
+        server_module=_CAD_IMPORT_SERVER,
         tool_name=tool_name,
         arguments=arguments,
     )

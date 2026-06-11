@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Literal, Tuple
 
-from design.mcp_client import call_cad_import_tool
+from design.mcp_client import call_cad_import_tool_async
 
 CadTarget = Literal["autocad", "rhino"]
 
@@ -25,7 +25,7 @@ def _parse_mcp_import_result(mcp_result: Dict[str, Any]) -> Tuple[bool, str]:
     return True, str(mcp_result.get("message") or "CAD 앱에서 DXF를 열었습니다.")
 
 
-def import_dxf_to_cad(
+async def import_dxf_to_cad(
     *,
     dxf_path: str,
     target_cad: CadTarget,
@@ -50,12 +50,12 @@ def import_dxf_to_cad(
 
     resolved = str(path)
     if target_cad == "autocad":
-        mcp_result = call_cad_import_tool(
+        mcp_result = await call_cad_import_tool_async(
             "import_to_autocad",
             {"dxf_path": resolved},
         )
     elif target_cad == "rhino":
-        mcp_result = call_cad_import_tool(
+        mcp_result = await call_cad_import_tool_async(
             "import_to_rhino",
             {
                 "dxf_path": resolved,
