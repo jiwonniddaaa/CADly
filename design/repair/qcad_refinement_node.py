@@ -42,15 +42,18 @@ def qcad_refinement_node(state):
                 "tool": "enhance_cad_style",
                 "params": {
                     "scale_factor": 100,
-                    "title": "FLOOR PLAN",
-                    "scale": "1:60",
-                    "drawing_no": "A-001",
                     "add_fixtures": False,
-                },
-                "wall_offset": 1.2,
-                "dimension_offset": 7.0,
-                "dimension_text_height": 2.5,
-                "title_text_height": 2.5,
+                    "align_room_boundaries": False,
+
+                    # visual tuning
+                    "wall_offset": 1.2,
+                    "dimension_offset": 7.0,
+                    "dimension_text_height": 2.5,
+
+                    # door ploicy
+                    "door_width_ratio": 0.08,
+                    "add_entrance_door": True,
+                }
             }
         ]
     }

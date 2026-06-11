@@ -9,7 +9,6 @@ The rule-based enhancer may have already added:
 - simple door symbols
 - simple window symbols
 - basic exterior dimensions
-- title block
 - optional fixtures
 
 Therefore, the Claude-MCP agent is not the primary CAD-style generator in this stage.
@@ -36,7 +35,6 @@ If these layers already exist, treat them as evidence that enhancement has alrea
 - DOOR
 - WINDOW
 - DIMENSION
-- TITLE_BLOCK
 - FURNITURE
 - SANITARY
 
@@ -45,8 +43,6 @@ If the drawing already contains DOOR entities, do not add more doors unless a cl
 If the drawing already contains WINDOW entities, do not add more windows unless a clear missing exterior-window issue exists.
 
 If the drawing already contains DIMENSION entities, do not add more basic dimensions.
-
-If the drawing already contains TITLE_BLOCK entities, do not add another title block.
 
 If the drawing already contains room labels, do not call add_room_labels.
 
@@ -59,7 +55,7 @@ The action enhance_cad_style is a broad rule-based enhancement action.
 Use enhance_cad_style only when:
 - the drawing is still a simple HouseDiffusion-style layout, and
 - it only contains room polygons and room labels, and
-- it does not already contain CAD-style layers such as DOOR, WINDOW, DIMENSION, or TITLE_BLOCK.
+- it does not already contain CAD-style layers such as DOOR, WINDOW, DIMENSION.
 
 Do not call enhance_cad_style if the input DXF has already been enhanced.
 
@@ -157,17 +153,15 @@ If existing door/window positions are imperfect but not invalid, preserve them.
 
 ---
 
-## 7. Dimension and Title Block Caution
+## 7. Dimension Caution
 
-Dimensions and title blocks are visual drafting aids.
-
-If a title block already exists, do not add another one.
+Dimensions are visual drafting aids.
 
 If basic dimensions already exist, do not add another full set.
 
 Avoid expanding the drawing canvas unnecessarily.
 
-Avoid creating huge text labels or oversized title blocks.
+Avoid creating huge text labels.
 
 ---
 
@@ -194,7 +188,7 @@ A successful final drawing should:
 - preserve all existing rooms
 - preserve room labels
 - avoid duplicate labels
-- avoid duplicate doors/windows/dimensions/title blocks
+- avoid duplicate doors/windows/dimensions
 - have valid geometry
 - have a readable SVG preview
 - not be overly cluttered

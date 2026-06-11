@@ -4,7 +4,7 @@ import json
 import math
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 
 def _read_lines(path: str | Path) -> List[str]:
@@ -445,7 +445,7 @@ def _append_text_entity(
 # ezdxf refinement helpers
 # ==============================
 
-ROOM_LIKE_LAYERS = {
+ROOM_LAYERS = {
     "living_room",
     "kitchen",
     "bedroom",
@@ -464,7 +464,6 @@ NON_ROOM_LAYERS = {
     "WINDOW",
     "DIMENSION",
     "GRID",
-    "TITLE_BLOCK",
     "FURNITURE",
     "SANITARY",
     "TEXT",
@@ -734,7 +733,7 @@ def _iter_room_polygons(msp) -> list[dict[str, Any]]:
                 continue
 
             layer_lower = layer.lower()
-            room_type = layer_lower if layer_lower in ROOM_LIKE_LAYERS else None
+            room_type = layer_lower if layer_lower in ROOM_LAYERS else None
 
             inferred = _infer_room_type_from_text(bbox, texts)
             if inferred:
@@ -777,7 +776,6 @@ def _normalize_layers(msp, params: Dict[str, Any]) -> int:
         "WINDOW": 5,
         "TEXT": 7,
         "DIMENSION": 1,
-        "TITLE_BLOCK": 7,
         "FURNITURE": 2,
         "SANITARY": 4,
     }.items():
@@ -792,7 +790,7 @@ def _normalize_layers(msp, params: Dict[str, Any]) -> int:
 
     for entity in msp:
         old_layer = str(entity.dxf.layer)
-        if old_layer in ROOM_LIKE_LAYERS:
+        if old_layer in ROOM_LAYERS:
             entity.dxf.layer = "WALL"
             changed += 1
 
@@ -1019,146 +1017,193 @@ def _shared_interval(
 
 def _add_simple_doors(msp, params: Dict[str, Any]) -> int:
     """
-    MVP door placement:
-    - living room 또는 가장 큰 방을 기준 공간으로 둔다.
-    - 다른 방과 기준 공간이 맞닿아 있으면 공유벽에 문을 추가한다.
-    - 마지막으로 기준 공간 하단에 entrance door 하나를 추가한다.
+    Simple deterministic door placement.
+
+    Rules:
+    - Find living_room. If not found, use the largest room as living.
+    - Add one door between living_room and kitchen if kitchen exists.
+    - Add one door between living_room and bedroom if bedroom exists.
+    - Add one entrance door on living_room lower wall.
+    - Do not use area filters, shared-wall filters, or max door filters.
     """
+    doc = _get_doc_from_msp(msp)
+    _ensure_layer(doc, "DOOR", color=3)
+
     rooms = _iter_room_polygons(msp)
     if not rooms:
         return 0
 
-    default_width_ratio = float(params.get("default_width_ratio", 0.10))
-    default_width = params.get("default_width")
+    plan_min_x, plan_min_y, plan_max_x, plan_max_y = _get_bbox_from_msp(msp)
+    plan_size = max(plan_max_x - plan_min_x, plan_max_y - plan_min_y, 1.0)
 
-    # 기준 공간: living_room 우선, 없으면 가장 큰 room
+    door_width_ratio = float(params.get("door_width_ratio", 0.08))
+    door_width = float(params.get("default_width") or plan_size * door_width_ratio)
+
+    # 현재 샘플 좌표계 기준으로 너무 큰 문 방지
+    door_width = max(6.0, min(door_width, 14.0))
+
     living = None
+    kitchen = None
+    bedrooms = []
+
     for room in rooms:
-        if room["room_type"] == "living_room":
+        room_type = str(room.get("room_type", "")).lower()
+        layer = str(room.get("layer", "")).lower()
+        value = room_type or layer
+
+        if value == "living_room":
             living = room
-            break
+        elif value == "kitchen":
+            kitchen = room
+        elif value == "bedroom":
+            bedrooms.append(room)
 
     if living is None:
-        living = max(rooms, key=lambda r: r["area"])
-
-    lx1, ly1, lx2, ly2 = living["bbox"]
-
-    plan_min_x, plan_min_y, plan_max_x, plan_max_y = _get_bbox_from_msp(msp)
-    plan_size = max(plan_max_x - plan_min_x, plan_max_y - plan_min_y)
-    door_width = float(default_width or plan_size * default_width_ratio)
-
-    tolerance = float(params.get("wall_match_tolerance", plan_size * 0.02))
+        living = max(rooms, key=lambda r: float(r.get("area", 0.0)))
 
     added = 0
-    used_positions: list[tuple[float, float]] = []
+    placed_centers: list[tuple[float, float]] = []
 
-    def already_near(x: float, y: float) -> bool:
-        for px, py in used_positions:
-            if abs(px - x) <= door_width * 0.5 and abs(py - y) <= door_width * 0.5:
+    def _already_near(x: float, y: float, tol: float = 4.0) -> bool:
+        for px, py in placed_centers:
+            if abs(px - x) <= tol and abs(py - y) <= tol:
                 return True
         return False
 
-    for room in rooms:
-        if room is living:
-            continue
+    def _overlap_center(
+        a1: float,
+        a2: float,
+        b1: float,
+        b2: float,
+    ) -> float:
+        """
+        두 구간이 겹치면 겹치는 구간의 중심,
+        안 겹치면 target 중심을 living 범위 안으로 clamp.
+        """
+        lo = max(min(a1, a2), min(b1, b2))
+        hi = min(max(a1, a2), max(b1, b2))
 
-        x1, y1, x2, y2 = room["bbox"]
-        room_type = room["room_type"]
+        if hi > lo:
+            return (lo + hi) / 2
 
-        width = door_width * (0.8 if room_type == "bathroom" else 1.0)
+        target_center = (b1 + b2) / 2
+        return max(min(a1, a2), min(target_center, max(a1, a2)))
 
-        placed = False
+    def _place_door_to_room(target_room: dict[str, Any]) -> int:
+        lx1, ly1, lx2, ly2 = living["bbox"]
+        tx1, ty1, tx2, ty2 = target_room["bbox"]
 
-        # room right touches living left
-        if abs(x2 - lx1) <= tolerance:
-            shared = _shared_interval(y1, y2, ly1, ly2)
-            if shared:
-                sy1, sy2 = shared
-                y = (sy1 + sy2) / 2 - width / 2
-                x = x2
-                if not already_near(x, y):
-                    added += _add_door_symbol(
-                        msp,
-                        x=x,
-                        y=y,
-                        width=min(width, max(1.0, sy2 - sy1) * 0.75),
-                        orientation="vertical",
-                        layer="DOOR",
-                    )
-                    used_positions.append((x, y))
-                    placed = True
+        # living과 target의 상대 위치 판단
+        living_cx = (lx1 + lx2) / 2
+        living_cy = (ly1 + ly2) / 2
+        target_cx = (tx1 + tx2) / 2
+        target_cy = (ty1 + ty2) / 2
 
-        # room left touches living right
-        if not placed and abs(x1 - lx2) <= tolerance:
-            shared = _shared_interval(y1, y2, ly1, ly2)
-            if shared:
-                sy1, sy2 = shared
-                y = (sy1 + sy2) / 2 - width / 2
-                x = x1
-                if not already_near(x, y):
-                    added += _add_door_symbol(
-                        msp,
-                        x=x,
-                        y=y,
-                        width=min(width, max(1.0, sy2 - sy1) * 0.75),
-                        orientation="vertical",
-                        swing="right",
-                        layer="DOOR",
-                    )
-                    used_positions.append((x, y))
-                    placed = True
+        dx = target_cx - living_cx
+        dy = target_cy - living_cy
 
-        # room top touches living bottom
-        if not placed and abs(y2 - ly1) <= tolerance:
-            shared = _shared_interval(x1, x2, lx1, lx2)
-            if shared:
-                sx1, sx2 = shared
-                x = (sx1 + sx2) / 2 - width / 2
-                y = y2
-                if not already_near(x, y):
-                    added += _add_door_symbol(
-                        msp,
-                        x=x,
-                        y=y,
-                        width=min(width, max(1.0, sx2 - sx1) * 0.75),
-                        orientation="horizontal",
-                        layer="DOOR",
-                    )
-                    used_positions.append((x, y))
-                    placed = True
+        # 좌우 관계가 더 강한 경우: vertical door
+        if abs(dx) >= abs(dy):
+            if dx >= 0:
+                # target is right of living
+                x = lx2
+                y_center = _overlap_center(ly1, ly2, ty1, ty2)
+                swing = "left"
+            else:
+                # target is left of living
+                x = lx1
+                y_center = _overlap_center(ly1, ly2, ty1, ty2)
+                swing = "right"
 
-        # room bottom touches living top
-        if not placed and abs(y1 - ly2) <= tolerance:
-            shared = _shared_interval(x1, x2, lx1, lx2)
-            if shared:
-                sx1, sx2 = shared
-                x = (sx1 + sx2) / 2 - width / 2
-                y = y1
-                if not already_near(x, y):
-                    added += _add_door_symbol(
-                        msp,
-                        x=x,
-                        y=y,
-                        width=min(width, max(1.0, sx2 - sx1) * 0.75),
-                        orientation="horizontal",
-                        swing="right",
-                        layer="DOOR",
-                    )
-                    used_positions.append((x, y))
-                    placed = True
+            width = min(door_width, max(6.0, abs(ty2 - ty1) * 0.7))
+            y = y_center - width / 2
+            center = (x, y_center)
 
-    # entrance door on living room bottom wall
-    entrance_width = door_width
-    x = (lx1 + lx2) / 2 - entrance_width / 2
-    y = ly1
-    added += _add_door_symbol(
-        msp,
-        x=x,
-        y=y,
-        width=entrance_width,
-        orientation="horizontal",
-        layer="DOOR",
-    )
+            if _already_near(*center):
+                return 0
+
+            placed_centers.append(center)
+
+            return _add_door_symbol(
+                msp,
+                x=x,
+                y=y,
+                width=width,
+                orientation="vertical",
+                swing=swing,
+                layer="DOOR",
+            )
+
+        # 상하 관계가 더 강한 경우: horizontal door
+        else:
+            if dy >= 0:
+                # target is above living
+                y = ly2
+                x_center = _overlap_center(lx1, lx2, tx1, tx2)
+            else:
+                # target is below living
+                y = ly1
+                x_center = _overlap_center(lx1, lx2, tx1, tx2)
+
+            width = min(door_width, max(6.0, abs(tx2 - tx1) * 0.7))
+            x = x_center - width / 2
+            center = (x_center, y)
+
+            if _already_near(*center):
+                return 0
+
+            placed_centers.append(center)
+
+            return _add_door_symbol(
+                msp,
+                x=x,
+                y=y,
+                width=width,
+                orientation="horizontal",
+                swing="left",
+                layer="DOOR",
+            )
+
+    def _place_entrance_door() -> int:
+        lx1, ly1, lx2, ly2 = living["bbox"]
+        living_w = lx2 - lx1
+
+        if living_w <= 1.0:
+            return 0
+
+        width = min(door_width, living_w * 0.18)
+        x = lx1 + living_w * 0.25
+        y = ly1
+        center = (x + width / 2, y)
+
+        if _already_near(*center):
+            return 0
+
+        placed_centers.append(center)
+
+        return _add_door_symbol(
+            msp,
+            x=x,
+            y=y,
+            width=width,
+            orientation="horizontal",
+            swing="left",
+            layer="DOOR",
+        )
+
+    # 1. kitchen door
+    if kitchen is not None:
+        added += _place_door_to_room(kitchen)
+
+    # 2. bedroom door
+    if bedrooms:
+        # 여러 bedroom이면 가장 큰 bedroom 하나만
+        bedroom = max(bedrooms, key=lambda r: float(r.get("area", 0.0)))
+        added += _place_door_to_room(bedroom)
+
+    # 3. entrance door
+    if params.get("add_entrance_door", True):
+        added += _place_entrance_door()
 
     return added
 
@@ -1338,64 +1383,6 @@ def _add_basic_dimensions(msp, params: Dict[str, Any]) -> int:
     return added
 
 
-def _add_title_block(msp, params: Dict[str, Any]) -> int:
-    doc = _get_doc_from_msp(msp)
-    _ensure_layer(doc, "TITLE_BLOCK", color=7)
-
-    min_x, min_y, max_x, max_y = _get_bbox_from_msp(msp)
-
-    drawing_w = max(max_x - min_x, 1.0)
-    drawing_h = max(max_y - min_y, 1.0)
-
-    x1 = max_x + drawing_w * 0.28
-    y1 = min_y
-    w = drawing_w * 0.42
-    h = drawing_h * 0.28
-    x2 = x1 + w
-    y2 = y1 + h
-
-    _add_rect_lwpolyline(msp, x1, y1, x2, y2, layer="TITLE_BLOCK")
-
-    # 내부 구분선
-    msp.add_line((x1, y1 + h * 0.33), (x2, y1 + h * 0.33), dxfattribs={"layer": "TITLE_BLOCK"})
-    msp.add_line((x1, y1 + h * 0.66), (x2, y1 + h * 0.66), dxfattribs={"layer": "TITLE_BLOCK"})
-
-    title = params.get("title", "FLOOR PLAN")
-    scale = params.get("scale", "1:60")
-    drawing_no = params.get("drawing_no", "A-001")
-
-    text_h = float(params.get("text_height", drawing_h * 0.035))
-
-    _add_text_ezdxf(
-        msp,
-        f"TITLE: {title}",
-        x1 + w * 0.06,
-        y1 + h * 0.78,
-        height=text_h,
-        layer="TITLE_BLOCK",
-    )
-
-    _add_text_ezdxf(
-        msp,
-        f"SCALE: {scale}",
-        x1 + w * 0.06,
-        y1 + h * 0.45,
-        height=text_h,
-        layer="TITLE_BLOCK",
-    )
-
-    _add_text_ezdxf(
-        msp,
-        f"NO: {drawing_no}",
-        x1 + w * 0.06,
-        y1 + h * 0.13,
-        height=text_h,
-        layer="TITLE_BLOCK",
-    )
-
-    return 7
-
-
 def _add_basic_fixtures(msp, params: Dict[str, Any]) -> int:
     rooms = _iter_room_polygons(msp)
     if not rooms:
@@ -1534,7 +1521,6 @@ def _clean_cad_layers(msp, params: Dict[str, Any]) -> int:
         "WINDOW": 5,
         "TEXT": 7,
         "DIMENSION": 1,
-        "TITLE_BLOCK": 7,
         "FURNITURE": 2,
         "SANITARY": 4,
     }.items():
@@ -1605,6 +1591,226 @@ def _remove_duplicate_elements(msp, params: Dict[str, Any]) -> int:
 
     return removed
 
+
+def _distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
+
+def _cluster_numeric_values(values: List[float], tolerance: float) -> Dict[float, float]:
+    """
+    가까운 좌표값들을 하나의 대표값으로 스냅하기 위한 매핑 생성.
+    예: [0, 0.2, 0.3, 10, 10.1] -> {0->0.166, 0.2->0.166, 0.3->0.166, 10->10.05, 10.1->10.05}
+    """
+    if not values:
+        return {}
+
+    sorted_values = sorted(values)
+    groups: List[List[float]] = []
+    current_group = [sorted_values[0]]
+
+    for v in sorted_values[1:]:
+        if abs(v - current_group[-1]) <= tolerance:
+            current_group.append(v)
+        else:
+            groups.append(current_group)
+            current_group = [v]
+    groups.append(current_group)
+
+    value_map: Dict[float, float] = {}
+    for group in groups:
+        rep = sum(group) / len(group)
+        for v in group:
+            value_map[v] = rep
+
+    return value_map
+
+
+def _get_lwpolyline_xy_points(entity) -> List[Tuple[float, float]]:
+    points = []
+    for p in entity.get_points("xy"):
+        points.append((float(p[0]), float(p[1])))
+    return points
+
+
+def _set_lwpolyline_xy_points(entity, points: List[Tuple[float, float]]) -> None:
+    closed = entity.closed
+    entity.clear()
+    entity.append_points(points, format="xy")
+    entity.closed = closed
+
+
+def _bbox_from_points(points: List[Tuple[float, float]]) -> Tuple[float, float, float, float]:
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_contains_point(
+    bbox: Tuple[float, float, float, float],
+    point: Tuple[float, float],
+    margin: float = 0.0,
+) -> bool:
+    min_x, min_y, max_x, max_y = bbox
+    x, y = point
+    return (
+        min_x - margin <= x <= max_x + margin
+        and min_y - margin <= y <= max_y + margin
+    )
+
+
+def _polygon_area(points: List[Tuple[float, float]]) -> float:
+    """
+    Shoelace formula. 반환값 단위는 입력 좌표 단위^2.
+    """
+    if len(points) < 3:
+        return 0.0
+
+    area = 0.0
+    for i in range(len(points)):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % len(points)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) * 0.5
+
+
+def _polygon_centroid(points: List[Tuple[float, float]]) -> Tuple[float, float]:
+    """
+    Polygon centroid. 실패하면 bbox center 반환.
+    """
+    if len(points) < 3:
+        min_x, min_y, max_x, max_y = _bbox_from_points(points)
+        return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
+    signed_area = 0.0
+    cx = 0.0
+    cy = 0.0
+
+    for i in range(len(points)):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % len(points)]
+        a = x0 * y1 - x1 * y0
+        signed_area += a
+        cx += (x0 + x1) * a
+        cy += (y0 + y1) * a
+
+    if abs(signed_area) < 1e-9:
+        min_x, min_y, max_x, max_y = _bbox_from_points(points)
+        return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
+    signed_area *= 0.5
+    cx /= (6.0 * signed_area)
+    cy /= (6.0 * signed_area)
+    return (cx, cy)
+
+
+def _entity_center_2d(entity) -> Optional[Tuple[float, float]]:
+    try:
+        dxftype = entity.dxftype()
+
+        if dxftype == "ARC":
+            center = entity.dxf.center
+            return (float(center.x), float(center.y))
+
+        if dxftype == "LINE":
+            start = entity.dxf.start
+            end = entity.dxf.end
+            return (
+                (float(start.x) + float(end.x)) / 2.0,
+                (float(start.y) + float(end.y)) / 2.0,
+            )
+
+        if dxftype == "LWPOLYLINE":
+            pts = _get_lwpolyline_xy_points(entity)
+            if not pts:
+                return None
+            min_x, min_y, max_x, max_y = _bbox_from_points(pts)
+            return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
+        if dxftype == "TEXT":
+            insert = entity.dxf.insert
+            return (float(insert.x), float(insert.y))
+
+        if dxftype == "MTEXT":
+            insert = entity.dxf.insert
+            return (float(insert.x), float(insert.y))
+
+    except Exception:
+        return None
+
+    return None
+
+
+def _get_room_polylines(msp) -> List[Any]:
+    room_polylines = []
+
+    for entity in msp:
+        if entity.dxftype() != "LWPOLYLINE":
+            continue
+
+        layer = str(entity.dxf.layer)
+        if layer not in ROOM_LAYERS:
+            continue
+
+        if not entity.closed:
+            continue
+
+        room_polylines.append(entity)
+
+    return room_polylines
+
+
+def _align_room_boundaries(msp, params: Dict[str, Any]) -> int:
+    """
+    room layer에 있는 closed LWPOLYLINE들의 vertex x/y를 tolerance 기준으로 스냅.
+    가까운 수평/수직 경계를 정렬해 미세한 틀어짐을 줄인다.
+    """
+    tolerance = float(params.get("boundary_tolerance", 8.0))
+
+    room_polylines = _get_room_polylines(msp)
+    if not room_polylines:
+        return 0
+
+    all_x = []
+    all_y = []
+
+    poly_points_map: Dict[Any, List[Tuple[float, float]]] = {}
+    for entity in room_polylines:
+        pts = _get_lwpolyline_xy_points(entity)
+        if len(pts) < 3:
+            continue
+        poly_points_map[entity] = pts
+        for x, y in pts:
+            all_x.append(x)
+            all_y.append(y)
+
+    if not all_x or not all_y:
+        return 0
+
+    x_map = _cluster_numeric_values(all_x, tolerance)
+    y_map = _cluster_numeric_values(all_y, tolerance)
+
+    changed_vertices = 0
+
+    for entity, pts in poly_points_map.items():
+        new_pts = []
+        changed_here = False
+
+        for x, y in pts:
+            nx = x_map.get(x, x)
+            ny = y_map.get(y, y)
+
+            if abs(nx - x) > 1e-6 or abs(ny - y) > 1e-6:
+                changed_here = True
+                changed_vertices += 1
+
+            new_pts.append((nx, ny))
+
+        if changed_here:
+            _set_lwpolyline_xy_points(entity, new_pts)
+
+    return changed_vertices
+
+
 def apply_plan_python(
     input_dxf: str,
     output_dxf: str,
@@ -1623,13 +1829,16 @@ def apply_plan_python(
         "added_doors": 0,
         "added_windows": 0,
         "added_dimensions": 0,
-        "added_title_block": 0,
         "added_wall_outline": 0,
         "added_fixtures": 0,
+
         "removed_tiny_lines": 0,
         "normalized_text_size": 0,
         "cleaned_layers": 0,
         "removed_duplicates": 0,
+
+        "aligned_room_boundaries": 0,
+        "added_room_area_labels": 0,
     }
 
     actions = refinement_plan.get("actions", [])
@@ -1639,13 +1848,21 @@ def apply_plan_python(
         params = action.get("params", {})
 
         if tool == "enhance_cad_style":
+            # room geometry 미세 정렬
+            if params.get("align_room_boundaries", True):
+                changed["aligned_room_boundaries"] += _align_room_boundaries(msp, params)
+
+            # CAD 요소 추가
             changed["added_wall_outline"] += _add_wall_outline(msp, params)
             changed["added_doors"] += _add_simple_doors(msp, params)
             changed["added_windows"] += _add_simple_windows(msp, params)
             changed["added_dimensions"] += _add_basic_dimensions(msp, params)
-            changed["added_title_block"] += _add_title_block(msp, params)
+
+            # optional fixtures
             if params.get("add_fixtures", False):
                 changed["added_fixtures"] += _add_basic_fixtures(msp, params)
+            
+            # cleanup
             changed["removed_tiny_lines"] += _remove_tiny_lines(msp, params)
             changed["normalized_text_size"] += _normalize_text_size(msp, params)
             changed["cleaned_layers"] += _clean_cad_layers(msp, params)
@@ -1682,12 +1899,6 @@ def apply_plan_python(
                 params,
             )
 
-        elif tool == "add_title_block":
-            changed["added_title_block"] += _add_title_block(
-                msp,
-                params,
-            )
-
         elif tool == "add_wall_outline":
             changed["added_wall_outline"] += _add_wall_outline(
                 msp,
@@ -1711,6 +1922,9 @@ def apply_plan_python(
 
         elif tool == "remove_duplicate_elements":
             changed["removed_duplicates"] += _remove_duplicate_elements(msp, params)
+
+        elif tool == "align_room_boundaries":
+            changed["aligned_room_boundaries"] += _align_room_boundaries(msp, params)
 
     Path(output_dxf).parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(output_dxf)

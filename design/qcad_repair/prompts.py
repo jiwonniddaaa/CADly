@@ -30,8 +30,7 @@ Available refinement actions:
 6. add_simple_doors
 7. add_simple_windows
 8. add_basic_dimensions
-9. add_title_block
-10. add_basic_fixtures
+9. add_basic_fixtures
 
 Use enhance_cad_style only if the input is still clearly under-detailed.
 Otherwise, use small repair actions or empty actions.

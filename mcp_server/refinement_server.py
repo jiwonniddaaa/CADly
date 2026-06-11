@@ -85,14 +85,13 @@ def apply_refinement_plan(
     Supported actions:
     - enhance_cad_style:
       Adds CAD-style wall outline, simple doors, simple windows,
-      basic dimensions, title block, and basic fixtures.
+      basic dimensions, and basic fixtures.
     - normalize_layers
     - align_walls
     - add_room_labels
     - add_simple_doors
     - add_simple_windows
     - add_basic_dimensions
-    - add_title_block
     - add_wall_outline
     - add_basic_fixtures
 
@@ -103,9 +102,7 @@ def apply_refinement_plan(
           "tool": "enhance_cad_style",
           "params": {
             "scale_factor": 100,
-            "title": "FLOOR PLAN",
-            "scale": "1:60",
-            "drawing_no": "A-001"
+            "add_fixtures": false,
           }
         }
       ]

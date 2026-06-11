@@ -126,7 +126,7 @@ Input DXF:
 {input_path}
 
 This input DXF has already been processed by a rule-based CAD style enhancer.
-It may contain added wall outlines, simple doors, windows, dimensions, title block, and other CAD-style drafting elements.
+It may contain added wall outlines, simple doors, windows, dimensions, and other CAD-style drafting elements.
 
 Your role is not to redesign the floorplan.
 Your role is to inspect, validate, and safely repair the enhanced DXF if necessary.
@@ -155,7 +155,7 @@ Required process:
 
 Important:
 - Do not run enhance_cad_style again unless the enhanced DXF is still clearly under-detailed.
-- Do not add duplicate doors, windows, dimensions, or title blocks.
+- Do not add duplicate doors, windows, dimensions.
 - Preserve the existing room topology.
 - Do not invent new rooms.
 """
