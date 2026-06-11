@@ -1,15 +1,21 @@
+# CADly/agent/planning_chat_service.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import base64
+
 from langchain_core.messages import HumanMessage
 
+from planning.pending_state import migrate_pending_fields, reference_awaiting_from_pending
 from planning.orchestrator import build_planning_orchestrator
 from CADly.agent.session_utils import (
     EPHEMERAL_STATE_KEYS,
     build_persisted_fields,
+    decode_image_base64,
     get_last_ai_text,
     merge_session_blob,
+    normalize_upload_image,
     persist_upload_image,
     split_session_blob,
 )
@@ -34,7 +40,6 @@ def _merge_legacy_concept_state(
             merged[planning_key] = concept_state[legacy_key]
 
     for key in (
-        "awaiting_concept_confirmation",
         "concept_keywords",
         "design_intent",
         "narrative",
@@ -44,7 +49,10 @@ def _merge_legacy_concept_state(
         if key in concept_state:
             merged[key] = concept_state[key]
 
-    return merged
+    if "pending_action" not in merged and concept_state.get("awaiting_concept_confirmation"):
+        merged["pending_action"] = "concept_confirmation"
+
+    return migrate_pending_fields(merged)
 
 
 def _load_session_state(
@@ -91,6 +99,23 @@ async def run_planning_chat(
         concept_state,
     )
     messages = [*history_messages, HumanMessage(content=user_text)]
+
+    if image_base64:
+        try:
+            normalized_bytes, image_media_type = normalize_upload_image(
+                decode_image_base64(image_base64),
+                image_media_type,
+            )
+            image_base64 = base64.b64encode(normalized_bytes).decode("utf-8")
+        except ValueError as exc:
+            return {
+                "response": str(exc),
+                "search_results": [],
+                "planning_state": planning_state or {},
+                "agent_type": "agent",
+                "route": "",
+                "active_orchestrator": "planning",
+            }
 
     resolved_image_path = image_path
     if image_base64 and not resolved_image_path:
@@ -166,9 +191,7 @@ async def run_planning_chat(
         "narrative": result.get("narrative", ""),
         "concept_structured": result.get("concept_structured", {}),
         "concept_updated_at": result.get("concept_updated_at", ""),
-        "awaiting_concept_confirmation": result.get(
-            "awaiting_concept_confirmation", False
-        ),
+        "pending_action": result.get("pending_action", "none"),
         "image_type": result.get("image_type"),
         "active_orchestrator": active_orchestrator,
         "design_state": design_state,

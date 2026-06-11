@@ -24,6 +24,7 @@ class GraphState(TypedDict, total=False):
 
     # 채민 - reference search 전용 state
     search_query: str
+    last_search_query: str
     search_results: List[Dict[str, Any]]
 
     # 채민 - concept/narrative 강화 전용 state 추가 (필요에 따라 자유롭게 수정)
@@ -73,6 +74,99 @@ def _parse_search_query(llm_content: str, fallback: str) -> str:
         query = content.replace("SEARCH:", "", 1).strip()
         return query or fallback
     return content or fallback
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    return extract_user_text(content)
+
+
+def _format_recent_conversation(messages: List[BaseMessage], limit: int = 6) -> str:
+    lines: List[str] = []
+    for msg in (messages or [])[-limit:]:
+        text = _message_text(msg.content)
+        if not text:
+            continue
+        if len(text) > 280:
+            text = text[:280] + "..."
+        role = "User" if msg.type == "human" else "Assistant"
+        lines.append(f"{role}: {text}")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _build_english_search_query(
+    user_input: str,
+    *,
+    concept_keywords: List[str] | None = None,
+    last_search_query: str = "",
+    recent_conversation: str = "",
+    design_intent: str = "",
+) -> str:
+    keywords_text = ", ".join(
+        str(k).strip() for k in (concept_keywords or []) if str(k).strip()
+    ) or "(none)"
+
+    prompt = f"""
+You are an expert query writer for Google Image Search.
+Your task is to create concise English search keywords for architecture/interior reference images.
+
+Goal:
+
+* Convert the user's request into a high-quality English image search query.
+* The query should work well for architectural reference image search, not for general web search.
+
+Latest user message:
+{user_input or "(none)"}
+
+Previous successful search query:
+{last_search_query or "(none)"}
+
+Concept keywords:
+{keywords_text}
+
+Design intent summary:
+{design_intent[:300] if design_intent else "(none)"}
+
+Recent conversation:
+{recent_conversation or "(none)"}
+
+Instructions:
+
+* Output English only.
+* Output only one line in the required format.
+* Use 5 to 10 words.
+* Prefer nouns and adjectives, not full sentences.
+* Focus on architecture/interior visual qualities: building type, style, scale, material, facade, courtyard, garden, layout, atmosphere.
+* If the latest user message is a follow-up or refinement, combine it with the previous successful search query.
+* If Korean concept keywords or design intent are provided, translate and summarize them into natural English search keywords.
+* Remove conversational words such as "find", "show me", "more", "similar", "please".
+* Do not include explanations, punctuation-heavy phrases, hashtags, or markdown.
+* Do not output Korean.
+
+Examples:
+Input: 밝은 분위기의 나무 소재 집 찾아줘
+Output: SEARCH: bright wooden house warm natural light interior
+
+Input: 작은 앞마당이 있는 2층 단독주택
+Output: SEARCH: two story single family house small front yard
+
+Input: 좀 더 미니멀하게
+Previous query: urban two story house small front yard
+Output: SEARCH: minimalist urban two story house small front yard
+
+Output format:
+SEARCH: [english keywords]
+"""
+
+    response = low_llm.invoke([HumanMessage(content=prompt)])
+    fallback_parts = [
+        last_search_query,
+        user_input,
+        "modern architecture interior",
+    ]
+    fallback = next((part.strip() for part in fallback_parts if part and part.strip()), "modern architecture interior")
+    return _parse_search_query(response.content.strip(), fallback)
 
 
 # 3. 라우팅 노드: 사용자의 의도를 파악하고 영어 검색어를 추출합니다.
@@ -129,6 +223,8 @@ def search_node(state: GraphState):
             "proceed_to_search": False,
         }
 
+    print(f"[reference_search] SEARCH: {query} (input_mode={state.get('input_mode', 'text')})")
+
     # SerpApi 연동 커넥터 호출
     results = search_reference_images(query=query, limit=5)
     
@@ -173,6 +269,7 @@ def search_node(state: GraphState):
     return {
         "messages": [ai_message],
         "search_results": results,
+        "last_search_query": query,
         "awaiting_concept_confirmation": False,
         "proceed_to_search": False,
     }
@@ -250,38 +347,15 @@ def image_query_processing_node(state: GraphState) -> Dict[str, Any]:
 
 # 채민 - 쿼리 관련 작업 노드
 def query_processing_node(state: GraphState):
-    # 채민 - 기존 route_node의 기능을 이 노드로 옮겨서, route_node는 단순히 의도 파악과 라우팅 역할만 하도록 변경
-    # 채민 - 예린 님 구현 방식에 따라 아래 내용은 자유롭게 수정하셔도 됩니다
     messages = state["messages"]
     user_input = extract_user_text(messages[-1].content)
-
-    prompt = f"""
-    당신은 건축/인테리어 레퍼런스 이미지를 찾아주는 전문 에이전트입니다.
-    사용자의 입력을 분석하여 구글 이미지 검색에 사용할 핵심 영어 키워드를 추출하세요.
-    
-    사용자 입력: {user_input}
-    
-    출력 형식 (반드시 아래 형식의 단일 문자열로만 응답하세요):
-    SEARCH: [영어 검색어]
-    
-    예시:
-    입력: 밝은 분위기의 나무 소재 집 찾아줘
-    출력: SEARCH: bright wooden house exterior interior
-    """
-    
-    # 채민 - 쿼리 추출은 저사양 모델로 처리
-    response = low_llm.invoke([HumanMessage(content=prompt)])
-
-    content = response.content.strip()
-
-    #if content.startswith("SEARCH:"):
-    #    query = content.replace("SEARCH:", "").strip()
-    #    return {"search_query": query}
-    #else:
-    #    return {"search_query": "modern architecture interior"}
-
-    # 이 코드로 수정함.
-    query = _parse_search_query(content, "modern architecture interior")
+    query = _build_english_search_query(
+        user_input,
+        concept_keywords=state.get("concept_keywords") or [],
+        last_search_query=state.get("last_search_query") or "",
+        recent_conversation=_format_recent_conversation(messages[:-1], limit=6),
+        design_intent=state.get("design_intent") or "",
+    )
 
     return {
         "search_query": query,
@@ -491,10 +565,13 @@ def _handle_concept_confirmation(state: GraphState, user_input: str) -> Dict[str
     )
 
     if confirm:
-        keywords = state.get("concept_keywords") or []
-        search_query = " ".join(str(k).strip() for k in keywords if str(k).strip())
-        if not search_query:
-            search_query = (state.get("design_intent") or "").strip()[:120]
+        search_query = _build_english_search_query(
+            user_input,
+            concept_keywords=state.get("concept_keywords") or [],
+            last_search_query=state.get("last_search_query") or "",
+            recent_conversation=_format_recent_conversation(state.get("messages") or [], limit=4),
+            design_intent=state.get("design_intent") or "",
+        )
 
         return {
             "search_query": search_query,

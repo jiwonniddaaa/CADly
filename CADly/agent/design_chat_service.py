@@ -17,6 +17,35 @@ from CADly.agent.session_utils import (
 
 _design_app = build_design_orchestrator()
 
+_HANDOFF_SUCCESS_TAIL = "이제 도면 생성, 수정, CAD 연동 작업을 진행할 수 있습니다."
+_DESIGN_FAILURE_STATUSES = frozenset(
+    {"validation_failed", "save_failed", "sampling_failed", "error"}
+)
+
+
+def _is_design_failure(status: str) -> bool:
+    return status in _DESIGN_FAILURE_STATUSES
+
+
+def _failure_detail(result: Dict[str, Any]) -> str:
+    errors = result.get("validation_errors") or []
+    if errors:
+        return str(errors[0]).strip()
+    return (result.get("message") or "").strip()
+
+
+def _compose_handoff_failure_response(handoff_text: str, result: Dict[str, Any]) -> str:
+    detail = _failure_detail(result)
+    failure_block = "다만 도면 파일 생성에 실패했습니다."
+    if detail:
+        failure_block = f"{failure_block}\n{detail}"
+
+    if _HANDOFF_SUCCESS_TAIL in handoff_text:
+        prefix = handoff_text.split(_HANDOFF_SUCCESS_TAIL, 1)[0].rstrip()
+        return f"{prefix}\n{failure_block}"
+
+    return f"{handoff_text.rstrip()}\n\n{failure_block}"
+
 
 def _build_design_response_text(result: Dict[str, Any]) -> str:
     status = result.get("status", "")
@@ -32,16 +61,35 @@ def _build_design_response_text(result: Dict[str, Any]) -> str:
             lines.append(f"DXF: {dxf_path}")
         return "\n".join(lines)
 
+    if _is_design_failure(status):
+        detail = _failure_detail(result)
+        if detail:
+            return f"도면 생성에 실패했습니다.\n{detail}"
+        return "도면 생성에 실패했습니다."
+
     if message:
         return message
 
-    if status in {"validation_failed", "save_failed", "sampling_failed", "error"}:
-        errors = result.get("validation_errors") or []
-        if errors:
-            return f"도면 생성에 실패했습니다.\n{errors[0]}"
-        return "도면 생성에 실패했습니다."
-
     return "설계 파이프라인을 실행했습니다."
+
+
+def _resolve_design_response_text(
+    messages: List[Any],
+    result: Dict[str, Any],
+) -> str:
+    status = result.get("status", "")
+
+    if _is_design_failure(status):
+        handoff_text = get_last_ai_text(messages)
+        if handoff_text and "설계 단계로 넘어갑니다" in handoff_text:
+            return _compose_handoff_failure_response(handoff_text, result)
+        return _build_design_response_text(result)
+
+    design_text = _build_design_response_text(result)
+    if status == "completed" and result.get("svg_path"):
+        return design_text
+
+    return get_last_ai_text(messages) or design_text
 
 
 async def run_design_chat(
@@ -111,7 +159,7 @@ async def run_design_chat(
     if result_messages:
         messages = [*messages, *result_messages]
 
-    response_text = get_last_ai_text(messages) or _build_design_response_text(result)
+    response_text = _resolve_design_response_text(messages, result)
     if response_text and not any(isinstance(m, AIMessage) and m.content == response_text for m in messages):
         messages = [*messages, AIMessage(content=response_text)]
 

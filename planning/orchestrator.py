@@ -1,3 +1,4 @@
+# planning/orchestrator.py
 from __future__ import annotations
 
 import json
@@ -12,7 +13,29 @@ from site_agent.site_agent import SiteAgent
 from site_agent.site_analyzer import SiteAnalyzer
 from site_agent.config import PublicDataConfig
 from site_agent.public_data_client import PublicDataClient
+from planning.pending_state import (
+    PendingAction,
+    clear_pending,
+    is_pending,
+    normalize_pending_action,
+    reference_awaiting_from_pending,
+    resolve_pending_after_planning_agent,
+)
 from planning.planning_agent import PlanningAgent
+from planning.space_utils import (
+    apply_single_room_generator_fallback,
+    indoor_spaces,
+    strip_outside_edges,
+    sum_indoor_space_areas,
+)
+from planning.supervisor import (
+    build_session_context,
+    flow_guidance,
+    general_answer_system_prompt,
+    pending_reminder,
+    resolve_entry_route,
+    try_template_status_answer,
+)
 from design.orchestrator import build_design_orchestrator
 from langchain_anthropic import ChatAnthropic
 
@@ -77,9 +100,9 @@ class PlanningState(TypedDict, total=False):
     narrative: Optional[str]
     concept_structured: Optional[Dict[str, Any]]
     concept_updated_at: Optional[str]
-    awaiting_concept_confirmation: bool
 
     references: Optional[List[Dict[str, Any]]]
+    last_search_query: Optional[str]
     site_analysis: Optional[Dict[str, Any]]
     
     image_base64: Optional[str]
@@ -94,7 +117,6 @@ class PlanningState(TypedDict, total=False):
     # checker results
     missing_requirements: List[str]
     ready_for_design: bool
-    design_confirmation: bool
 
     # final handoff payload
     design_payload: Optional[Dict[str, Any]]
@@ -104,10 +126,9 @@ class PlanningState(TypedDict, total=False):
 
     # area recommendation state
     area_recommendation_result: Optional[Dict[str, Any]]
-    area_decision_pending: bool
-    area_mode_pending: bool
     next_step: Optional[str]
-    awaiting_manual_area_input: bool
+    pending_action: PendingAction
+    proceed_without_site_analysis: bool
 
     # [추가] 이미지 처리용 컨텍스트 정보
     image_path: Optional[str]
@@ -116,6 +137,8 @@ class PlanningState(TypedDict, total=False):
     image_classification: Optional[Dict[str, Any]]
     sketch_analysis: Optional[Dict[str, Any]]
     sketch_result: Optional[Dict[str, Any]]
+    sketch_apply_ok: Optional[bool]
+    template_answer: Optional[str]
 
 # 유틸리티 함수
 def messages_to_text(messages: List[BaseMessage]) -> str:
@@ -135,6 +158,14 @@ def safe_json_loads(text: str) -> dict:
         if start != -1 and end != -1:
             return json.loads(text[start:end + 1])
         raise ValueError(f"JSON parsing failed: {text}")
+
+
+def _last_user_message_text(state: PlanningState) -> str:
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    content = messages[-1].content
+    return content if isinstance(content, str) else str(content)
 
 def _encode_image(image_path: str) -> Tuple[str, str]:
     path = Path(image_path)
@@ -200,9 +231,15 @@ def convert_planning_payload_to_generator_graph(payload: dict) -> dict:
         "area_for_generation": area_for_generation,
     }
 
-# 노드 정의
+# 노드 정의 — 진입 라우팅: deterministic pre-check → Supervisor LLM
 def router_node(state: PlanningState) -> PlanningState:
-    if state.get("image_path"):
+    if state.get("image_base64"):
+        return {
+            "route": "image_understanding"
+        }
+
+    image_path = state.get("image_path")
+    if image_path and Path(image_path).is_file():
         return {
             "route": "image_understanding"
         }
@@ -224,108 +261,15 @@ def router_node(state: PlanningState) -> PlanningState:
             "image_path": extracted_image_path
         }
 
-    # "직접 입력"을 선택한 직후 턴은 무조건 요구사항 추출 노드로 보냅니다.
-    if state.get("awaiting_manual_area_input"):
-        return {"route": "extract_requirements"}
+    template = try_template_status_answer(state)
+    if template:
+        return {
+            "route": "general_answer",
+            "template_answer": template,
+        }
 
-    # PlanningAgent가 사용자 면적 의사결정(yes/no 또는 입력 방식 선택)을 기다리는 상태면
-    # LLM 라우팅을 우회하고 planning_agent로 직접 보냅니다.
-    if state.get("area_decision_pending") or state.get("area_mode_pending"):
-        return {"route": "planning_agent"}
-
-    # 컨셉 확인(레퍼런스 검색 여부) 대기 중이면 reference_agent로 보냅니다.
-    if state.get("awaiting_concept_confirmation"):
-        return {"route": "reference_agent"}
-
-    conversation = messages_to_text(state["messages"])
-    system_prompt = """
-You are the planning orchestrator router for CADly.
-
-Choose exactly one route.
-
-Routes:
-
-1. reference_agent
-- User asks for architectural/interior design references, styles, ideas, or examples.
-- User wants to develop, clarify, or improve a design concept (e.g., "도시적", "모던한", "세련된 느낌").
-
-2. site_agent
-- user asks about site analysis
-- user asks about legal regulation, zoning, setbacks, FAR, BCR
-- user asks about sunlight, road, surroundings, land constraints
-- user asks about location, address, site, land, candidate site
-
-3. extract_requirements
-- user gives spatial requirements
-- user describes desired rooms, adjacency, size, area
-- user provides or changes output file name
-- user wants to organize the current plan
-- user asks to generate a drawing but has not confirmed a prepared design payload yet
-
-4. planning_agent
-- follow-up response for area decision flow (yes/no, manual/recommend)
-
-5. handoff_to_design
-- Choose this if a has_design_payload is true
-- and the previous assistant message asked for final generation confirmation
-- and the user clearly confirms generation
-
-6. general_answer
-- general response that does not need another agent
-
-CRITICAL ROUTING PRIORITIES & RULES:
-- If has_design_payload is true and the previous assistant message asked for confirmation and the user confirms, route to handoff_to_design.
-- If design_confirmation is false and the user asks to make/generate a drawing, route to extract_requirements first.
-- Return only JSON.
-
-Few-Shot Examples:
-- "강남구 역삼동 땅에 지을만한 세련된 아파트 사진이나 사례 좀 찾아봐" -> reference_agent (Focus is on visual concepts/examples)
-- "역삼동 747 아파트 규제 법규나 건폐율 알려줘" -> site_agent
-- "방 3개랑 거실 구조로 도면 한번 설계해볼래?" -> extract_requirements (Initial request without confirmed payload)
-- "그래, 그 조건대로 도면 바로 생성해줘." (When payload is ready) -> handoff_to_design
-- "너 이름이 뭐야?" -> general_answer
-
-{
-  "route": "..."
-}
-"""
-
-    user_prompt = f"""
-Conversation:
-{conversation}
-
-Current state:
-has_design_payload = {state.get("design_payload") is not None}
-has_site_analysis = {state.get("site_analysis") is not None}
-current_spaces = {json.dumps(state.get("spaces", []), ensure_ascii=False)}
-current_edges = {json.dumps(state.get("edges", []), ensure_ascii=False)}
-current_output_name = {state.get("output_name")}
-current_building_type = {state.get("building_type")}
-"""
-
-    response = low_llm.invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt),
-    ])
-
-    parsed = safe_json_loads(response.content)
-    route = parsed.get("route", "general_answer")
-    # 예린 - 라우터가 허용된 값만 반환하도록 화이트리스트로 방어
-    allowed_routes = {
-        "image_understanding",
-        "reference_agent",
-        "site_agent",
-        "extract_requirements",
-        "planning_agent",
-        "handoff_to_design",
-        "general_answer",
-    }
-    if route not in allowed_routes:
-        route = "general_answer"
-
-    return {
-        "route": route,
-    }
+    route = resolve_entry_route(state, low_llm)
+    return {"route": route}
 
 def reference_agent_node(state: PlanningState) -> PlanningState:
     # 예린 - 마지막 메시지는 현재 사용자 입력, 이전 메시지는 채팅 기록하여 이전 대화 흐름까지 참조하도록 수정 
@@ -339,7 +283,8 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         "design_intent": state.get("design_intent") or "",
         "narrative": state.get("narrative") or "",
         "concept_structured": state.get("concept_structured") or {},
-        "awaiting_concept_confirmation": state.get("awaiting_concept_confirmation", False),
+        "awaiting_concept_confirmation": reference_awaiting_from_pending(state),
+        "last_search_query": state.get("last_search_query") or "",
     }
 
     result = reference_agent.chat(
@@ -351,16 +296,23 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         image_media_type=state.get("image_media_type"),
     )
 
+    ref_awaiting = result.get("awaiting_concept_confirmation", False)
     update: PlanningState = {
         "references": result.get("search_results", result.get("images", [])),
         "concept": result.get("concept_result") or state.get("concept"),
         "messages": [
             AIMessage(content=result.get("response", "레퍼런스 분석을 완료했습니다."))
         ],
-        "awaiting_concept_confirmation": result.get(
-            "awaiting_concept_confirmation", False
-        ),
     }
+    if ref_awaiting:
+        update["pending_action"] = "concept_confirmation"
+    elif is_pending(state, "concept_confirmation"):
+        update["pending_action"] = "none"
+
+    if result.get("last_search_query"):
+        update["last_search_query"] = result["last_search_query"]
+    elif result.get("search_query"):
+        update["last_search_query"] = result["search_query"]
 
     # 예린 - 컨셉 개발 의도가 있거나 컨셉 결과가 있으면 컨셉 상태를 업데이트함
     if result.get("intent") == "concept_develop" or result.get("concept_result"):
@@ -376,6 +328,52 @@ def reference_agent_node(state: PlanningState) -> PlanningState:
         )
 
     return update
+
+def sketch_apply_node(state: PlanningState) -> PlanningState:
+    """손도면 extract 결과를 spaces/edges에 반영한 뒤 planning flow로 넘깁니다."""
+    sketch_result = state.get("sketch_result")
+    if not isinstance(sketch_result, dict):
+        return {
+            "sketch_apply_ok": False,
+            "messages": [
+                AIMessage(
+                    content=(
+                        "손도면에서 공간 정보를 추출하지 못했습니다. "
+                        "다른 이미지로 다시 시도하거나 공간 구성을 텍스트로 알려 주세요."
+                    )
+                )
+            ],
+        }
+
+    spaces = sketch_result.get("spaces") or []
+    if not spaces:
+        return {
+            "sketch_apply_ok": False,
+            "messages": [
+                AIMessage(
+                    content=(
+                        "손도면에서 인식된 공간이 없습니다. "
+                        "공간 이름이 보이는 스케치를 업로드하거나, "
+                        "예) 거실, 주방, 침실 2개 구성으로 알려 주세요."
+                    )
+                )
+            ],
+        }
+
+    update: PlanningState = {
+        "sketch_apply_ok": True,
+        "spaces": indoor_spaces(spaces),
+        "edges": strip_outside_edges(sketch_result.get("edges") or state.get("edges") or []),
+        "sketch_result": sketch_result,
+        "image_type": state.get("image_type") or "hand_sketch",
+    }
+    if sketch_result.get("output_name"):
+        update["output_name"] = sketch_result["output_name"]
+    if sketch_result.get("building_type"):
+        update["building_type"] = sketch_result["building_type"]
+
+    return update
+
 
 async def site_agent_node(state: PlanningState) -> PlanningState:
     user_query = state["messages"][-1].content
@@ -400,7 +398,9 @@ async def site_agent_node(state: PlanningState) -> PlanningState:
     }
 
 def extract_requirements_node(state: PlanningState) -> PlanningState:
-    conversation = messages_to_text(state["messages"])
+    latest_user_message = _last_user_message_text(state)
+    recent_messages = state.get("messages") or []
+    recent_conversation = messages_to_text(recent_messages[-6:])
 
     current_spaces = state.get("spaces", [])
     current_edges = state.get("edges", [])
@@ -415,7 +415,8 @@ Extract and update the user's design requirements from the conversation.
 Important:
 - Preserve previous requirements unless the user clearly changes them.
 - Use stable room ids in snake_case.
-- edges mean adjacency or direct relationship between rooms.
+- edges mean adjacency between indoor rooms only.
+- Do not include outside in spaces or edges.
 - area is optional. If unknown, use null.
 - Do not invent rooms unless strongly implied.
 - Extract output_name if the user explicitly mentions a file name.
@@ -455,7 +456,8 @@ Return only JSON:
     }
   ],
   "edges": [
-    ["living_room1", "outside"],
+    ["entrance1", "living_room1"],
+    ["living_room1", "kitchen1"]
   ],
   "output_name": null,
   "building_type": null,
@@ -475,8 +477,11 @@ Current output_name:
 Current building_type:
 {current_building_type}
 
-Conversation:
-{conversation}
+Latest user message:
+{latest_user_message}
+
+Recent conversation:
+{recent_conversation}
 """
 
     response = high_llm.invoke([
@@ -484,16 +489,32 @@ Conversation:
         HumanMessage(content=user_prompt),
     ])
 
-    parsed = safe_json_loads(response.content)
+    try:
+        parsed = safe_json_loads(response.content)
+    except ValueError:
+        retry_hint = (
+            "요구사항을 정확히 이해하지 못했습니다. "
+            "공간 구성, 면적, 파일명, 건물 유형을 다시 입력해 주세요."
+        )
+        if is_pending(state, "manual_area_input"):
+            retry_hint = (
+                "면적 입력을 이해하지 못했습니다. "
+                "예: 거실 24, 주방 12, 침실1 14 형식으로 다시 입력해 주세요."
+            )
+        return {
+            "messages": [AIMessage(content=retry_hint)],
+        }
 
-    return {
-        "spaces": parsed.get("spaces", current_spaces),
-        "edges": parsed.get("edges", current_edges),
+    update: PlanningState = {
+        "spaces": indoor_spaces(parsed.get("spaces", current_spaces)),
+        "edges": strip_outside_edges(parsed.get("edges", current_edges)),
         "output_name": parsed.get("output_name") or current_output_name,
         "building_type": parsed.get("building_type") or current_building_type,
-        "awaiting_manual_area_input": False,
-        "design_confirmation": False,
+        **clear_pending(),
     }
+    if state.get("design_payload") is not None:
+        update["design_payload"] = None
+    return update
 
 def planning_agent_node(state: PlanningState) -> PlanningState:
     result = planning_agent.run(state)
@@ -502,28 +523,21 @@ def planning_agent_node(state: PlanningState) -> PlanningState:
         "missing_requirements": result.get("missing_requirements", []),
         "spaces": result.get("spaces", state.get("spaces", [])),
         "area_recommendation_result": result.get("area_recommendation_result"),
-        "area_decision_pending": result.get("area_decision_pending", False),
-        "area_mode_pending": result.get("area_mode_pending", False),
-        "awaiting_manual_area_input": result.get("awaiting_manual_area_input", False),
+        "pending_action": resolve_pending_after_planning_agent(result, state),
         "next_step": result.get("next_step"),
+        "proceed_without_site_analysis": result.get(
+            "proceed_without_site_analysis",
+            state.get("proceed_without_site_analysis", False),
+        ),
         "messages": result.get("messages", []),
     }
 
 def build_design_payload_node(state: PlanningState) -> PlanningState:
-    spaces = state.get("spaces", [])
-    edges = state.get("edges", [])
+    spaces = indoor_spaces(state.get("spaces", []))
+    edges = strip_outside_edges(state.get("edges", []))
     building_type = state.get("building_type")
 
-    if len(spaces) == 1 and not edges: # house diffusion을 위한 최소한의 edge 정보 추가
-        spaces = spaces + [
-            {
-                "id": "outside",
-                "room_type": "outside",
-                "area": None,
-                "notes": "auto-added boundary node",
-            }
-        ]
-        edges = [[spaces[0]["id"], "outside"]]
+    payload_spaces, payload_edges = apply_single_room_generator_fallback(spaces, edges)
 
     site_analysis = state.get("site_analysis") or {}
     diffusion_output = site_analysis.get("diffusion_output", {})
@@ -544,20 +558,35 @@ def build_design_payload_node(state: PlanningState) -> PlanningState:
             ],
         }
 
+    if area_for_generation is None:
+        area_for_generation = sum_indoor_space_areas(payload_spaces)
+
+    if area_for_generation is None:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "도면 생성 기준 면적을 정할 수 없습니다. "
+                        "대지 분석을 진행하거나 공간별 면적을 입력해 주세요."
+                    )
+                )
+            ],
+        }
+
     payload = {
         "design_requirements": {
-            "spaces": spaces,
-            "edges": edges,
+            "spaces": payload_spaces,
+            "edges": payload_edges,
         },
         "generation_context": {
-            "room_type": [space["room_type"] for space in spaces],
+            "room_type": [space["room_type"] for space in payload_spaces],
             "area_m2": area_for_generation,
             "area": {
                 space["id"]: space.get("area")
-                for space in spaces
+                for space in payload_spaces
                 if space.get("area") is not None
             },
-            "edges": edges,
+            "edges": payload_edges,
         },
     }
 
@@ -620,39 +649,40 @@ def handoff_to_design_node(state: PlanningState) -> PlanningState:
     }
 
 def general_answer_node(state: PlanningState) -> PlanningState:
-    user_query = state["messages"][-1].content
+    """세션 state 기반 설명만 제공. planning state 필드는 변경하지 않음."""
+    template = state.get("template_answer")
+    if template:
+        answer = template.strip()
+    else:
+        user_query = _last_user_message_text(state)
+        session_context = build_session_context(state)
+        recent_messages = state.get("messages") or []
+        conversation = messages_to_text(recent_messages[-8:])
 
-    response = high_llm.invoke([
-        SystemMessage(content="""
-You are CADly, an AI architectural planning and design assistant.
+        response = high_llm.invoke([
+            SystemMessage(content=general_answer_system_prompt()),
+            HumanMessage(content=f"""
+Recent conversation:
+{conversation}
 
-CADly helps users with:
-- architectural planning
-- spatial programming
-- design concept development
-- site and zoning understanding
-- floorplan generation workflows
-- architectural reference exploration
-- CAD-based design assistance
+Session state (JSON):
+{session_context}
 
-Always respond in natural Korean.
+User message:
+{user_query}
+"""),
+        ])
+        answer = (response.content or "").strip()
 
-Guidelines:
-- Be concise but helpful.
-- Maintain the tone of a professional architectural design assistant.
-- When users ask casual questions, respond naturally while maintaining CADly's identity.
-- When users ask about architecture, space, buildings, planning, floorplans, design concepts, or CAD workflows, answer as an architectural planning/design assistant.
-- Do not pretend to have completed actions that were not actually executed.
-- If the user asks about capabilities, explain CADly as an architectural planning and design support system.
-"""
-),
-        HumanMessage(content=user_query),
-    ])
+    reminder = pending_reminder(state)
+    if reminder and reminder not in answer:
+        answer = f"{answer}{reminder}"
+    guidance = flow_guidance(state)
+    if guidance and guidance not in answer:
+        answer = f"{answer}\n\n—\n{guidance}"
 
     return {
-        "messages": [
-            AIMessage(content=response.content)
-        ]
+        "messages": [AIMessage(content=answer)],
     }
 
 # conditional 라우팅 함수
@@ -662,8 +692,14 @@ def route_after_router(state: PlanningState) -> str:
 def route_after_image_understanding(state: PlanningState) -> str:
     return state.get("route", "general_answer")
 
+def route_after_sketch_apply(state: PlanningState) -> str:
+    if state.get("sketch_apply_ok"):
+        return "planning_agent"
+    return "end"
+
+
 def route_after_planning_agent(state: PlanningState) -> str:
-    if state.get("area_decision_pending") or state.get("area_mode_pending"):
+    if is_pending(state, "area_decision", "area_mode"):
         return "end"
 
     if state.get("next_step") == "build_design_payload":
@@ -681,8 +717,9 @@ def build_planning_orchestrator():
     graph.add_node("router", router_node)
     graph.add_node("image_understanding", image_understanding_node)
     
-    graph.add_node("sketch_analysis_node", sketch_agent_instance.analysis_node)          
-    graph.add_node("sketch_extract_node", sketch_agent_instance.extract_node)    
+    graph.add_node("sketch_analysis_node", sketch_agent_instance.analysis_node)
+    graph.add_node("sketch_extract_node", sketch_agent_instance.extract_node)
+    graph.add_node("sketch_apply_node", sketch_apply_node)
     graph.add_node("reference_agent", reference_agent_node)
     graph.add_node("site_agent", site_agent_node)
     graph.add_node("extract_requirements", extract_requirements_node)
@@ -714,13 +751,22 @@ def build_planning_orchestrator():
         {
             "sketch_agent_node": "sketch_analysis_node",
             "reference_agent": "reference_agent",
-            "general_answer": "general_answer"
+            "general_answer": "general_answer",
+            "end": END,
         }
     )
 
-    # 손도면 흐름 연결 후 한 턴 대기종료
+    # 손도면: extract → spaces/edges merge → planning 검증
     graph.add_edge("sketch_analysis_node", "sketch_extract_node")
-    graph.add_edge("sketch_extract_node", END)
+    graph.add_edge("sketch_extract_node", "sketch_apply_node")
+    graph.add_conditional_edges(
+        "sketch_apply_node",
+        route_after_sketch_apply,
+        {
+            "planning_agent": "planning_agent",
+            "end": END,
+        },
+    )
 
     graph.add_edge("reference_agent", END)
     graph.add_edge("site_agent", END)

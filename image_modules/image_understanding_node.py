@@ -1,37 +1,46 @@
+# image_modules/image_understanding_node.py
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 from typing import Dict, Any
 
+from anthropic import BadRequestError
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+
+from CADly.agent.session_utils import (
+    decode_image_base64,
+    prepare_image_payload,
+)
 
 llm = ChatAnthropic(
     model="claude-haiku-4-5-20251001"
 )
 
-# 유틸리티 함수
-def _encode_image(image_path: str) -> tuple[str, str]:
-    path = Path(image_path)
+_IMAGE_ERROR_MESSAGE = (
+    "업로드하신 이미지를 분석할 수 없습니다. "
+    "JPG, PNG, WebP, GIF, HEIC 형식의 이미지를 다시 업로드해 주세요."
+)
 
-    if not path.exists():
-        raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
 
-    mime_map = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-    }
+def _load_image_payload(state: Dict[str, Any]) -> tuple[str, str]:
+    image_media_type = state.get("image_media_type")
+    image_base64 = state.get("image_base64")
+    image_path = state.get("image_path")
 
-    media_type = mime_map.get(path.suffix.lower())
-    if media_type is None:
-        raise ValueError(f"지원하지 않는 이미지 형식입니다: {path.suffix}")
+    if image_base64:
+        data = decode_image_base64(image_base64)
+    elif image_path:
+        path = Path(image_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
+        data = path.read_bytes()
+    else:
+        raise ValueError("분석할 이미지가 없습니다.")
 
-    image_data = base64.b64encode(path.read_bytes()).decode("utf-8")
-    return image_data, media_type
+    return prepare_image_payload(data, image_media_type)
+
 
 def _safe_json_loads(text: str) -> Dict[str, Any]:
     try:
@@ -43,24 +52,27 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
             "image_type": "unsupported_image",
             "reason": "JSON parsing failed",
         }
-    
-# 노드 정의
+
+
+def _image_error_response(message: str) -> Dict[str, Any]:
+    return {
+        "route": "end",
+        "image_type": "unsupported_image",
+        "messages": [AIMessage(content=message)],
+    }
+
+
 def image_understanding_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     이미지가 손도면인지, 레퍼런스 이미지인지, 지원 불가 이미지인지 분류하는 노드.
     실제 분석은 sketch_agent 또는 reference_agent에서 수행한다.
     """
-
-    image_path = state.get("image_path")
     user_input = state.get("user_input", "")
 
-    if not image_path:
-        return {
-            "route": "general_answer",
-            "image_type": None,
-        }
-
-    image_data, media_type = _encode_image(image_path)
+    try:
+        image_data, media_type = _load_image_payload(state)
+    except (FileNotFoundError, ValueError) as exc:
+        return _image_error_response(str(exc))
 
     prompt = f"""
 너는 CADly의 이미지 입력 라우터다.
@@ -95,24 +107,27 @@ def image_understanding_node(state: Dict[str, Any]) -> Dict[str, Any]:
 }}
 """
 
-    response = llm.invoke([
-        HumanMessage(
-            content=[
-                {
+    try:
+        response = llm.invoke([
+            HumanMessage(
+                content=[
+                    {
                         "type": "text",
                         "text": prompt,
                     },
-                {
+                    {
                         "type": "image",
                         "source": {
                             "type": "base64",
                             "media_type": media_type,
                             "data": image_data,
                         },
-                },
-            ],
-        )
-    ])
+                    },
+                ],
+            )
+        ])
+    except BadRequestError:
+        return _image_error_response(_IMAGE_ERROR_MESSAGE)
 
     content = response.content
     result = _safe_json_loads(content)

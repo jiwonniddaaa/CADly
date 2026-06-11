@@ -11,9 +11,14 @@ export const cadlyApi = {
   // 채팅 메시지 전송 (이미지 파일 첨부 지원)
   sendMessage: async (message, projectId, imageFile = null) => {
     const formData = new FormData();
-    formData.append('message', message);
+    const normalizedMessage = (message || '').trim();
+
     formData.append('session_id', projectId);
-    
+    // FastAPI Form(...)는 빈 문자열을 누락으로 처리하므로, 텍스트가 있을 때만 전송
+    if (normalizedMessage) {
+      formData.append('message', normalizedMessage);
+    }
+
     if (imageFile) {
       formData.append('file', imageFile);
     }

@@ -1,3 +1,4 @@
+# CADly/CADly_BE/app/services/agent_service.py
 import base64
 import mimetypes
 import httpx
@@ -20,7 +21,7 @@ _SESSION_META_KEYS = (
 
 # Agent가 planning_state 없이 내려줄 때만 개별 병합하는 레거시 키
 _LEGACY_PLANNING_KEYS = (
-    "awaiting_concept_confirmation",
+    "pending_action",
     "concept_keywords",
     "concept",
     "concept_result",
@@ -34,10 +35,8 @@ _LEGACY_PLANNING_KEYS = (
     "output_name",
     "building_type",
     "site_analysis",
-    "area_decision_pending",
-    "area_mode_pending",
-    "awaiting_manual_area_input",
     "image_type",
+    "last_search_query",
 )
 
 
